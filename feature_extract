@@ -1,0 +1,59 @@
+import argparse
+import logging
+import os
+import sys
+from termcolor import colored
+
+import openslide
+from sauron.preprocess.slide_embedder import SlideEmbedder
+
+# Configure logger
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Process whole slide images for tissue segmentation, patch extraction, and feature embedding."
+    )
+
+    parser.add_argument(
+        "--slide_dir",
+        type=str,
+        required=True,
+        default="./slides",
+        help="Path to the directory containing the slide images. This parameter is required.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./output",
+        help="Directory where the results (tissue segmentation, patch coordinates, and patch embeddings) will be saved. Defaults to './../data/downstream'.",
+    )
+    parser.add_argument(
+        "--mag",
+        type=int,
+        default=20,
+        help="Magnification level for patch extraction. Defaults to 20x.",
+    )
+    parser.add_argument(
+        "--patch_size",
+        type=int,
+        default=256,
+        help="Size of the patches to be extracted. Defaults to 256.",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=32,
+        help="Batch size for processing slides. Defaults to 32.",
+    )
+
+    args = parser.parse_args()
+
+    logger.info(colored("Initiating processing of slides...", "green"))
+
+    embedder = SlideEmbedder(args.slide_dir, args.output_dir, args.mag, args.patch_size)
+    embedder.process_slides()
