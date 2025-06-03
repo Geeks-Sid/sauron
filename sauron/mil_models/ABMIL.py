@@ -1,6 +1,3 @@
-# https://github.com/AMLab-Amsterdam/AttentionDeepMIL/blob/master/model.py
-# https://arxiv.org/pdf/1802.04712.pdf
-
 import random
 
 import numpy as np
@@ -128,13 +125,3 @@ class GatedAttention(nn.Module):
 
         # keep the same API with the clam
         return logits, Y_prob, Y_hat, None, {}
-
-
-if __name__ == "__main__":
-    seed_value = 42
-    random.seed(seed_value)
-    np.random.seed(seed_value)
-    torch.manual_seed(seed_value)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed_value)
-    model = DAttention(1024, 2, dropout=False, act="relu")

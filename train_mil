@@ -1,253 +1,187 @@
+# train_mil.py
 import argparse
 import os
-import numpy as np
 import pandas as pd
-import torch
-from dataset.dataset_generic import GenericMILDataset
 from torch.utils.tensorboard import SummaryWriter
-from utils.core_utils import train
-from utils.file_utils import save_pkl
-from sauron.utils.generic_utils import log_results, seed_everything
 
+# Sauron specific imports
+from sauron.parse.argparse import get_args # Assuming get_args is here
+from sauron.utils.environment_setup import (
+    setup_device,
+    seed_everything,
+    create_results_directory,
+    log_experiment_details,
+)
+from sauron.data.dataset_factory import get_dataset, determine_split_directory
+from sauron.training.pipeline import train_fold # This is the refactored train_fold
+from sauron.utils.generic_utils import log_results, save_pkl # Assuming these are general utils
 
-def get_dataset(task: str, seed: int, data_dir: str = None) -> Dataset:
-    if task == "TGCT":
-        return GenericMILDataset(
-            csv_path="dataset_csv/tgct_processed.csv",
-            label_dict={"MGCT": 0, "SEM": 1},
-            seed=seed,
-            data_dir=data_dir,
-        )
-    raise ValueError(f"Task not found: {task}")
-
-
-def process_folds(
-    dataset: GenericMILDataset, args: argparse.Namespace, writer: SummaryWriter
+def run_experiment_folds(
+    dataset_instance, # Renamed from 'dataset' to avoid conflict with 'datasets' from return_splits
+    args: argparse.Namespace,
+    experiment_results_dir: str # Pass the main experiment results dir for fold-level saving
 ) -> pd.DataFrame:
-    all_metrics = {
-        metric: [] for metric in ["test_auc", "val_auc", "test_acc", "val_acc"]
-    }
-    dataset.create_splits(k=args.k)
+    """
+    Manages the k-fold cross-validation loop.
+    """
+    # Define expected metrics based on task type for clarity
+    if args.task_type == "classification":
+        metric_keys = ["test_auc", "val_auc", "test_acc", "val_acc"]
+    elif args.task_type == "survival":
+        metric_keys = ["test_c_index", "val_c_index"] # Example for survival
+        # train_fold must return these for survival task
+    else:
+        raise ValueError(f"Unknown task_type: {args.task_type} for defining metrics.")
+    
+    all_fold_metrics = {key: [] for key in metric_keys}
+
+    # Dataset creates and manages its own splits internally based on k
+    dataset_instance.create_splits(k=args.k, seed=args.seed, split_dir=args.split_dir, val_frac = getattr(args, "val_frac", 0.2))
 
     for i in range(args.k_start, args.k_end):
-        dataset.set_splits(i)
-        datasets = dataset.return_splits(args.backbone, args.patch_size, from_id=True)
-
-        if args.preloading == "yes":
-            for d in datasets:
-                d.pre_loading()
-
-        results, *metrics = train(datasets, i, args)
-
-        for metric_name, metric_value in zip(all_metrics.keys(), metrics):
-            all_metrics[metric_name].append(metric_value)
-            writer.add_scalar(f"{metric_name}/fold_{i}", metric_value, i)
-
-        save_pkl(os.path.join(args.results_dir, f"split_{i}_results.pkl"), results)
-
-    return pd.DataFrame({"folds": range(args.k_start, args.k_end), **all_metrics})
-
-
-def main(args: argparse.Namespace) -> None:
-    os.makedirs(args.results_dir, exist_ok=True)
-    writer = SummaryWriter(args.results_dir)
-
-    args.k_start = max(0, args.k_start)
-    args.k_end = args.k if args.k_end == -1 else args.k_end
-
-    dataset = get_dataset(args.task, args.seed, args.data_root_dir)
-    args.n_classes = len(dataset.label_dict)
-
-    results_df = process_folds(dataset, args, writer)
-    log_results(results_df, args, writer)
-
-    writer.close()
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Configurations for Whole Slide Image (WSI) Training",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-
-    parser.add_argument(
-        "--data_root_dir",
-        type=str,
-        default=None,
-        help="Root directory containing the dataset",
-    )
-    parser.add_argument(
-        "--results_dir",
-        default="./results",
-        help="Directory to save training results and model checkpoints",
-    )
-    parser.add_argument(
-        "--split_dir",
-        type=str,
-        default=None,
-        help="Directory containing custom data splits. If not specified, splits will be inferred from the task and label_frac arguments",
-    )
-
-    parser.add_argument(
-        "--max_epochs", type=int, default=200, help="Maximum number of epochs to train"
-    )
-    parser.add_argument(
-        "--lr", type=float, default=1e-4, help="Initial learning rate for the optimizer"
-    )
-    parser.add_argument(
-        "--reg",
-        type=float,
-        default=1e-5,
-        help="Weight decay (L2 regularization) factor",
-    )
-    parser.add_argument(
-        "--opt",
-        type=str,
-        choices=["adam", "sgd"],
-        default="adam",
-        help="Optimizer to use for training",
-    )
-    parser.add_argument(
-        "--drop_out",
-        type=float,
-        default=0.25,
-        help="Dropout probability for regularization",
-    )
-    parser.add_argument(
-        "--early_stopping",
-        action="store_true",
-        help="Enable early stopping to prevent overfitting",
-    )
-    parser.add_argument(
-        "--weighted_sample",
-        action="store_true",
-        help="Enable weighted sampling to handle class imbalance",
-    )
-
-    parser.add_argument(
-        "--model_type",
-        type=str,
-        default="att_mil",
-        help="Type of model architecture (default: Att mil with single attention branch)",
-    )
-    parser.add_argument(
-        "--backbone",
-        type=str,
-        default="resnet50",
-        help="Backbone network for feature extraction",
-    )
-    parser.add_argument(
-        "--in_dim", type=int, default=1024, help="Input dimension for the model"
-    )
-
-    parser.add_argument(
-        "--mambamil_rate", type=int, default=10, help="Rate parameter for MambaMIL"
-    )
-    parser.add_argument(
-        "--mambamil_layer", type=int, default=2, help="Number of layers in MambaMIL"
-    )
-    parser.add_argument(
-        "--mambamil_type",
-        type=str,
-        default="SRMamba",
-        choices=["Mamba", "BiMamba", "SRMamba"],
-        help="Type of Mamba architecture to use",
-    )
-
-    parser.add_argument(
-        "--task",
-        type=str,
-        required=True,
-        help="Task name or identifier for the current experiment",
-    )
-    parser.add_argument(
-        "--exp_code",
-        type=str,
-        required=True,
-        help="Unique experiment code for identifying and saving results",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=1, help="Random seed for reproducibility"
-    )
-    parser.add_argument(
-        "--label_frac",
-        type=float,
-        default=1.0,
-        help="Fraction of training labels to use (for semi-supervised learning scenarios)",
-    )
-
-    parser.add_argument(
-        "--k", type=int, default=10, help="Total number of folds for cross-validation"
-    )
-    parser.add_argument(
-        "--k_start",
-        type=int,
-        default=-1,
-        help="Starting fold for cross-validation (-1 for last fold)",
-    )
-    parser.add_argument(
-        "--k_end",
-        type=int,
-        default=-1,
-        help="Ending fold for cross-validation (-1 for first fold)",
-    )
-
-    parser.add_argument(
-        "--patch_size",
-        type=str,
-        default="",
-        help="Size of image patches (format: [height]x[width])",
-    )
-    parser.add_argument(
-        "--resolution",
-        type=str,
-        default="20x",
-        help="Magnification level that you want to work with. Ex: 10x, or 10x_40x (combination)",
-    )
-    parser.add_argument(
-        "--early_fusion",
-        type=bool,
-        default=False,
-        help="Enables you to create an early fusion instead of a late fusion of models with multiple magnification levels",
-    )
-
-    parser.add_argument(
-        "--preloading",
-        type=str,
-        default="no",
-        choices=["yes", "no"],
-        help="Whether to preload data into memory",
-    )
-    parser.add_argument(
-        "--log_data",
-        action="store_true",
-        help="Enable logging of training data using TensorBoard",
-    )
-    parser.add_argument(
-        "--testing", action="store_true", help="Enable testing/debugging mode"
-    )
-
-    args = parser.parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Device is:", device)
-
-    seed_everything(args.seed)
-
-    args.results_dir = os.path.join(args.results_dir, f"{args.exp_code}_s{args.seed}")
-    os.makedirs(args.results_dir, exist_ok=True)
-
-    if args.split_dir is None:
-        args.split_dir = os.path.join(
-            "splits", f"{args.task}_{int(args.label_frac * 100)}"
+        print(f"\n{'='*10} Processing Fold: {i} {'='*10}")
+        
+        # Fold-specific results directory (for logs, checkpoints from train_fold)
+        # This is now handled INSIDE train_fold. train_fold receives `experiment_results_dir`
+        # and creates `experiment_results_dir/fold_i` itself.
+        
+        dataset_instance.set_splits(fold_idx=i) # Tell dataset to use fold 'i'
+        
+        # `return_splits` should give (train_dataset, val_dataset, test_dataset_or_None)
+        # It needs to know about args.backbone and args.patch_size for feature path resolution
+        # or these need to be part of the dataset's internal config.
+        # Assuming GenericMILDataset's return_splits handles this.
+        current_fold_datasets = dataset_instance.return_splits(
+            from_id=True, # This seems specific to how features are loaded
+            # Potentially pass feature-related args if dataset needs them here:
+            # backbone=args.backbone, patch_size=args.patch_size 
         )
 
-    assert os.path.isdir(
-        args.split_dir
-    ), f"Split directory does not exist: {args.split_dir}"
+        if args.preloading == "yes":
+            print(f"Preloading data for fold {i}...")
+            for d_idx, d in enumerate(current_fold_datasets):
+                if d is not None: # test_split can be None
+                    print(f"  Preloading dataset part {d_idx} ({type(d).__name__})...")
+                    d.pre_loading() # Ensure pre_loading exists on dataset objects
 
-    with open(os.path.join(args.results_dir, "experiment.txt"), "w") as f:
-        for key, val in vars(args).items():
-            print(f"{key}: {val}", file=f)
+        # train_fold now handles its own SummaryWriter for fold-specific logs
+        # It needs the main experiment_results_dir to create its fold-specific sub-directory.
+        fold_results_tuple = train_fold(
+            datasets=current_fold_datasets, 
+            cur_fold_num=i, 
+            args=args,
+            # Removed task_type as it should be in args
+            # experiment_base_results_dir=experiment_results_dir # Pass main dir
+        )
+        # train_fold returns:
+        # Classification (non-kfold): (results_dict, test_metric, val_metric, test_acc, val_acc_placeholder)
+        # Survival (non-kfold): (results_dict, test_cindex, val_cindex)
+        # k-fold mode: val_metric (e.g. val_auc or val_cindex)
+        
+        if args.k_fold: # Special handling for k-fold return from train_fold
+            # If train_fold in k-fold mode returns only val_metric, we need to adjust
+            # For now, assuming train_fold returns the full tuple even in k-fold,
+            # and we just use the val_metric. Or, train_fold's signature needs adjustment.
+            # Let's assume train_fold returns a simplified tuple for k-fold or we extract.
+            # The original code implies train_fold returns more than just val_metric.
+            # The unpack `results, *metrics` suggests this.
+            
+            patient_level_results_dict, *fold_metrics_values = fold_results_tuple
+        else: # Not k-fold, means it's a single run with train/val/test
+             patient_level_results_dict, *fold_metrics_values = fold_results_tuple
 
-    main(args)
-    print("Finished!")
+
+        if len(fold_metrics_values) != len(metric_keys):
+            raise ValueError(
+                f"Mismatch in number of metrics returned by train_fold ({len(fold_metrics_values)}) "
+                f"and expected metric_keys ({len(metric_keys)}). "
+                f"Task: {args.task_type}. Check train_fold's return for this task."
+            )
+
+        for key, value in zip(metric_keys, fold_metrics_values):
+            all_fold_metrics[key].append(value)
+            # Main summary writer (passed to this func) can log aggregated fold metrics
+            # writer_main.add_scalar(f"FoldMetrics/{key}_fold_{i}", value, i) # Optional
+
+        if patient_level_results_dict: # If train_fold returned detailed results
+            fold_results_pkl_path = os.path.join(experiment_results_dir, f"fold_{i}_results.pkl")
+            save_pkl(fold_results_pkl_path, patient_level_results_dict)
+            print(f"Saved patient-level results for fold {i} to {fold_results_pkl_path}")
+
+    return pd.DataFrame({"fold_num": range(args.k_start, args.k_end), **all_fold_metrics})
+
+
+def main_experiment_runner(args: argparse.Namespace):
+    """
+    Main function to run the entire experiment.
+    """
+    # 1. Initial Setup (device, seed, main results directory)
+    _ = setup_device() # Device setup, not strictly needed to be stored if not used directly here
+    seed_everything(args.seed)
+    
+    # This is the main experiment directory, e.g., results_dir/exp_code_s{seed}
+    # Individual folds will create subdirectories within this.
+    experiment_main_results_dir = create_results_directory(
+        args.results_dir, args.exp_code, args.seed
+    )
+    args.results_dir = experiment_main_results_dir # Update args to reflect the true main results path
+                                                  # So train_fold can use it as a base.
+    log_experiment_details(args, experiment_main_results_dir)
+
+    # 2. Determine and validate split directory
+    # This split_dir is where pre-generated split files (e.g., CSVs defining folds) might reside.
+    # Or, if splits are generated on-the-fly, it could be where they are saved.
+    args.split_dir = determine_split_directory(
+        args.split_dir, args.task_name, args.label_frac, args.k_fold > 1 # k_fold is num_folds
+    )
+    # If splits are *required* to be pre-existing:
+    if not os.path.isdir(args.split_dir) and getattr(args, "use_predefined_splits", False):
+         raise NotADirectoryError(f"Predefined split directory does not exist: {args.split_dir}")
+    os.makedirs(args.split_dir, exist_ok=True) # Ensure it exists if we plan to save splits there
+
+    # 3. Setup TensorBoard Writer for overall experiment summary (optional)
+    # train_fold will create its own writer for fold-specific logs.
+    # This writer is for higher-level summaries across folds.
+    with SummaryWriter(log_dir=os.path.join(experiment_main_results_dir, "summary_all_folds")) as summary_writer:
+        
+        # 4. k-fold start/end setup (already in original main)
+        args.k_start = max(0, args.k_start)
+        args.k_end = args.k if args.k_end == -1 or args.k_end > args.k else args.k_end
+        if args.k_start >= args.k_end:
+            print(f"Warning: k_start ({args.k_start}) is >= k_end ({args.k_end}). No folds will be run.")
+            return
+
+        # 5. Load the dataset
+        # GenericMILDataset parameters should be configurable via args
+        dataset_instance = get_dataset(
+            task_name=args.task_name, # Changed from args.task to args.task_name
+            csv_path=getattr(args, "dataset_csv", None), # Make CSV path an arg
+            label_col=getattr(args, "label_col", "label"),
+            label_dict=None, # Can be inferred or passed as JSON string arg
+            slide_id_col=getattr(args, "slide_id_col", "slide_id"),
+            seed=args.seed,
+            data_dir=args.data_root_dir, # Path to features
+            patient_id_col=getattr(args, "patient_id_col", None)
+        )
+        args.n_classes = dataset_instance.n_classes # Get n_classes from dataset instance
+        if not hasattr(args, 'task_type') or args.task_type is None: # Ensure task_type is set
+            args.task_type = getattr(args, "default_task_type", "classification") # e.g. "classification" or "survival"
+
+        # 6. Process folds
+        print(f"Starting experiment: {args.exp_code} with {args.k}-fold CV from fold {args.k_start} to {args.k_end-1}")
+        overall_results_df = run_experiment_folds(dataset_instance, args, experiment_main_results_dir)
+        
+        # 7. Log aggregated results
+        log_results(overall_results_df, args, summary_writer) # log_results should handle writer
+
+if __name__ == "__main__":
+    args = get_args()  # Parse arguments
+
+    # Potentially add more argument validation or default setting here if needed
+    if not hasattr(args, 'task_name'):
+        args.task_name = args.task # Compatibility if 'task' was old name for 'task_name'
+    if not hasattr(args, 'k_fold'): # k_fold is number of folds, not boolean
+        args.k_fold = args.k 
+    
+    main_experiment_runner(args)
+    print("Experiment Finished!")

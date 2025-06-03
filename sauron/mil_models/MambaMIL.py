@@ -7,18 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from mamba_ssm import Mamba
 
-from mamba.mamba_ssm import BiMamba, SRMamba
-
-
-def initialize_weights(module):
-    for m in module.modules():
-        if isinstance(m, nn.Linear):
-            nn.init.xavier_normal_(m.weight)
-            if m.bias is not None:
-                m.bias.data.zero_()
-        if isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
+from sauron.mil_models.mamba_ssm import BiMamba, SRMamba
+from sauron.utils.generic_utils import initialize_weights
 
 
 class MambaMIL(nn.Module):

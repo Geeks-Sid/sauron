@@ -8,7 +8,6 @@ from einops import rearrange, reduce
 from torch import einsum
 
 
-# helper functions
 def exists(val):
     return val is not None
 
@@ -31,7 +30,6 @@ def moore_penrose_iter_pinv(x, iters=6):
     return z
 
 
-# main attention class
 class NystromAttention(nn.Module):
     def __init__(
         self,
@@ -80,8 +78,6 @@ class NystromAttention(nn.Module):
             self.eps,
         )
 
-        # pad so that sequence can be evenly divided into m landmarks
-
         remainder = n % m
         if remainder > 0:
             padding = m - (n % m)
@@ -90,12 +86,8 @@ class NystromAttention(nn.Module):
             if exists(mask):
                 mask = F.pad(mask, (padding, 0), value=False)
 
-        # derive query, keys, values
-
         q, k, v = self.to_qkv(x).chunk(3, dim=-1)
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q, k, v))
-
-        # set masked positions to 0 in queries, keys, values
 
         if exists(mask):
             mask = rearrange(mask, "b n -> b () n")
@@ -103,14 +95,10 @@ class NystromAttention(nn.Module):
 
         q = q * self.scale
 
-        # generate landmarks by sum reduction, and then calculate mean using the mask
-
         l = ceil(n / m)
         landmark_einops_eq = "... (n l) d -> ... n d"
         q_landmarks = reduce(q, landmark_einops_eq, "sum", l=l)
         k_landmarks = reduce(k, landmark_einops_eq, "sum", l=l)
-
-        # calculate landmark mask, and also get sum of non-masked elements in preparation for masked mean
 
         divisor = l
         if exists(mask):
@@ -118,19 +106,13 @@ class NystromAttention(nn.Module):
             divisor = mask_landmarks_sum[..., None] + eps
             mask_landmarks = mask_landmarks_sum > 0
 
-        # masked mean (if mask exists)
-
         q_landmarks /= divisor
         k_landmarks /= divisor
-
-        # similarities
 
         einops_eq = "... i d, ... j d -> ... i j"
         sim1 = einsum(einops_eq, q, k_landmarks)
         sim2 = einsum(einops_eq, q_landmarks, k_landmarks)
         sim3 = einsum(einops_eq, q_landmarks, k)
-
-        # masking
 
         if exists(mask):
             mask_value = -torch.finfo(q.dtype).max
@@ -144,19 +126,13 @@ class NystromAttention(nn.Module):
                 ~(mask_landmarks[..., None] * mask[..., None, :]), mask_value
             )
 
-        # eq (15) in the paper and aggregate values
-
         attn1, attn2, attn3 = map(lambda t: t.softmax(dim=-1), (sim1, sim2, sim3))
         attn2_inv = moore_penrose_iter_pinv(attn2, iters)
 
         out = (attn1 @ attn2_inv) @ (attn3 @ v)
 
-        # add depth-wise conv residual of values
-
         if self.residual:
             out += self.res_conv(v)
-
-        # merge and combine heads
 
         out = rearrange(out, "b h n d -> b n (h d)", h=h)
         out = self.to_out(out)
@@ -167,9 +143,6 @@ class NystromAttention(nn.Module):
             return out, attn
 
         return out
-
-
-# transformer
 
 
 class PreNorm(nn.Module):
@@ -263,9 +236,9 @@ class TransLayer(nn.Module):
             dim=dim,
             dim_head=dim // 8,
             heads=8,
-            num_landmarks=dim // 2,  # number of landmarks
-            pinv_iterations=6,  # number of moore-penrose iterations for approximating pinverse. 6 was recommended by the paper
-            residual=True,  # whether to do an extra residual with the value or not. supposedly faster convergence if turned on
+            num_landmarks=dim // 2,
+            pinv_iterations=6,
+            residual=True,
             dropout=0.1,
         )
 
@@ -294,7 +267,6 @@ class PPEG(nn.Module):
 class TransMIL(nn.Module):
     def __init__(self, in_dim, n_classes, dropout, act, survival=False):
         super(TransMIL, self).__init__()
-        ###
         self._fc1 = [nn.Linear(in_dim, 512)]
         if act.lower() == "relu":
             self._fc1 += [nn.ReLU()]
@@ -322,34 +294,27 @@ class TransMIL(nn.Module):
         if len(x.shape) == 2:
             x = x.expand(1, -1, -1)
 
-        h = x.float()  # [B, n, 1024]
+        h = x.float()
 
-        h = self._fc1(h)  # [B, n, 256]
+        h = self._fc1(h)
 
-        # ---->pad
         H = h.shape[1]
         _H, _W = int(np.ceil(np.sqrt(H))), int(np.ceil(np.sqrt(H)))
         add_length = _H * _W - H
-        h = torch.cat([h, h[:, :add_length, :]], dim=1)  # [B, N, 256]
+        h = torch.cat([h, h[:, :add_length, :]], dim=1)
 
-        # ---->cls_token
         cls_tokens = self.cls_token.expand(1, -1, -1).cuda()
         h = torch.cat((cls_tokens, h), dim=1)
 
-        # ---->Translayer x1
-        h = self.layer1(h)  # [B, N, 256]
+        h = self.layer1(h)
 
-        # ---->PPEG
-        h = self.pos_layer(h, _H, _W)  # [B, N, 256]
+        h = self.pos_layer(h, _H, _W)
 
-        # ---->Translayer x2
-        h = self.layer2(h)  # [B, N, 256]
+        h = self.layer2(h)
 
-        # ---->cls_token
         h = self.norm(h)[:, 0]
 
-        # ---->predict
-        logits = self.classifier(h)  # [B, n_classes]
+        logits = self.classifier(h)
         Y_prob = F.softmax(logits, dim=1)
         Y_hat = torch.topk(logits, 1, dim=1)[1]
         A_raw = None
@@ -369,15 +334,3 @@ class TransMIL(nn.Module):
         self.layer2 = self.layer2.to(device)
         self.norm = self.norm.to(device)
         self.classifier = self.classifier.to(device)
-
-
-if __name__ == "__main__":
-    data = torch.randn((1, 6000, 1024))
-    data.to("cuda")
-    # model1 = TransMIL_l_v2(input_dim = 1024, layer =4, n_classes = 4, act = 'gelu', dropout = True)
-    # print(model1)
-    model2 = TransMIL(in_dim=1024, n_classes=4, act="gelu", dropout=0.25)
-    # results_dict = model1(data)
-    print(model2)
-    results_dict = model2(data)
-    print(results_dict)

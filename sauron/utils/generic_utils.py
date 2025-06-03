@@ -1,5 +1,6 @@
 import argparse
 import os
+import pickle
 from typing import List
 
 import numpy as np
@@ -10,7 +11,16 @@ from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
 
 
-def seed_everything(seed: int = 7) -> None:
+def save_pkl(filename, save_object):
+    with open(filename, "wb") as f:
+        pickle.dump(save_object, f)
+
+
+def load_pkl(filename):
+    return pickle.load(open(filename, "rb"))
+
+
+def seed_everything(seed: int = 42) -> None:
     import random
 
     random.seed(seed)
@@ -21,6 +31,10 @@ def seed_everything(seed: int = 7) -> None:
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
+
+def calculate_error(Y_hat: torch.Tensor, Y: torch.Tensor) -> float:
+    return 1.0 - Y_hat.float().eq(Y.float()).float().mean().item()
 
 
 def save_splits(
@@ -48,8 +62,7 @@ def save_splits(
 
 def initialize_weights(module):
     for m in module.modules():
-        if isinstance(m, nn.Linear):
-            # ref from clam
+        if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
             nn.init.xavier_normal_(m.weight)
             if m.bias is not None:
                 m.bias.data.zero_()

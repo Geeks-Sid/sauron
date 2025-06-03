@@ -1,5 +1,3 @@
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -81,17 +79,3 @@ class DifferentiableAttentionMIL(nn.Module):
         Y_hat = torch.argmax(Y_prob, dim=1)
 
         return logits, Y_prob, Y_hat, None, {}
-
-
-# Example usage
-if __name__ == "__main__":
-    model = DifferentiableAttentionMIL(
-        in_dim=1024, n_classes=2, dropout=False, act="relu", num_heads=4
-    )
-    x = torch.randn(
-        8, 50, 1024
-    )  # Batch of 8 bags, each with 50 instances of dimension 1024
-    logits, Y_prob, Y_hat, _, _ = model(x)
-    print("Logits:", logits)
-    print("Predicted probabilities:", Y_prob)
-    print("Predicted classes:", Y_hat)

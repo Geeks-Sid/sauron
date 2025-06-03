@@ -1,0 +1,47 @@
+sauron/
+├── __init__.py
+└── feature_extraction/
+    ├── __init__.py
+    ├── processor.py
+    ├── visualization.py
+    ├── conversion.py
+    ├── wsi/
+    │   ├── __init__.py
+    │   ├── base.py
+    │   ├── openslide.py
+    │   ├── cucim.py
+    │   ├── image.py
+    │   ├── factory.py
+    │   ├── patching.py
+    │   └── dataset.py
+    ├── models/
+    │   ├── __init__.py
+    │   ├── patch_encoders/
+    │   │   ├── __init__.py
+    │   │   ├── factory.py
+    │   │   ├── checkpoints.json
+    │   │   ├── zoo/
+    │   │   │   ├── __init__.py
+    │   │   │   └── ...
+    │   │   └── utils/
+    │   │       ├── __init__.py
+    │   │       ├── constants.py
+    │   │       └── transforms.py
+    │   ├── slide_encoders/
+    │   │   ├── __init__.py
+    │   │   ├── factory.py
+    │   │   ├── checkpoints.json
+    │   │   └── zoo/
+    │   │       ├── __init__.py
+    │   │       └── ...
+    │   └── segmentation/
+    │       ├── __init__.py
+    │       ├── factory.py
+    │       └── checkpoints.json
+    └── utils/
+        ├── __init__.py
+        ├── io.py
+        ├── h5_utils.py
+        ├── geo_utils.py
+        ├── config.py
+        └── misc.py

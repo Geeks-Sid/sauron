@@ -1,0 +1,613 @@
+from __future__ import annotations
+
+import os
+from typing import Dict, List, Optional, Tuple, Union
+
+import h5py
+import numpy as np
+import pandas as pd
+import torch
+from scipy.stats import mode
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from torch.utils.data import Dataset
+
+
+class ClassificationDataManager:
+    def __init__(
+        self,
+        csv_path: str,
+        data_directory: Union[str, Dict[str, str]],
+        label_column: str = "label",  # Actual column name in CSV for labels
+        label_mapping: Optional[Dict[str, int]] = None,
+        patient_id_col_name: str = "case_id",  # Actual col name in CSV for patient ID
+        slide_id_col_name: str = "slide_id",  # Actual col name in CSV for slide ID
+        shuffle: bool = False,
+        random_seed: int = 7,
+        verbose: bool = True,
+        filter_criteria: Optional[Dict[str, List[str]]] = None,
+        ignore_labels: Optional[List[str]] = None,  # Original string labels to ignore
+        patient_stratification: bool = False,  # If true, __len__ uses patient_data
+        patient_label_aggregation: str = "max",  # 'max' or 'majority'
+    ):
+        self.csv_path = csv_path
+        self.data_directory = data_directory
+        self.provided_label_column = label_column
+        self.label_mapping = label_mapping or {}
+        self.patient_id_col_name = patient_id_col_name
+        self.slide_id_col_name = slide_id_col_name
+        self.random_seed = random_seed
+        self.verbose = verbose
+        self.patient_stratification = (
+            patient_stratification  # Used by __len__ if this class were a Dataset
+        )
+
+        self.train_patient_ids: Optional[List[str]] = None
+        self.val_patient_ids: Optional[List[str]] = None
+        self.test_patient_ids: Optional[List[str]] = None
+
+        self.train_slide_indices: Optional[List[int]] = None
+        self.val_slide_indices: Optional[List[int]] = None
+        self.test_slide_indices: Optional[List[int]] = None
+
+        self.kfold_splits: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None
+        self.train_val_patient_data_for_kfold: Optional[pd.DataFrame] = None
+
+        # Load and preprocess slide data
+        try:
+            raw_slide_data = pd.read_csv(csv_path)
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"CSV file not found: {csv_path}") from e
+
+        # Standardize column names internally
+        self.slide_data = self._rename_cols(raw_slide_data)
+
+        self.slide_data = self._filter_data(self.slide_data, filter_criteria)
+        self.slide_data = self._prepare_labels(self.slide_data, ignore_labels)
+
+        if not self.label_mapping:  # Infer mapping if not provided
+            unique_labels = self.slide_data["label_str"].unique()
+            self.label_mapping = {
+                label: i for i, label in enumerate(sorted(unique_labels))
+            }
+            if verbose:
+                print(f"Inferred label_mapping: {self.label_mapping}")
+
+        # Apply the final mapping after potential inference
+        self.slide_data["label"] = self.slide_data["label_str"].map(self.label_mapping)
+        # Drop rows where mapping resulted in NaN (e.g. label_str not in inferred map)
+        self.slide_data.dropna(subset=["label"], inplace=True)
+        self.slide_data["label"] = self.slide_data["label"].astype(int)
+
+        self.num_classes = len(set(self.label_mapping.values()))
+        if self.num_classes == 0 and len(self.slide_data) > 0:
+            raise ValueError(
+                "Number of classes is 0. Check label_column and label_mapping. "
+                f"Unique labels found: {self.slide_data['label_str'].unique()}"
+            )
+
+        if shuffle:
+            self.slide_data = self.slide_data.sample(
+                frac=1, random_state=random_seed
+            ).reset_index(drop=True)
+
+        self._aggregate_patient_data(patient_label_aggregation)
+        self._prepare_class_indices()
+
+        if verbose:
+            self._print_summary()
+
+    def _rename_cols(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        if (
+            self.patient_id_col_name != "case_id"
+            and self.patient_id_col_name in df.columns
+        ):
+            df.rename(columns={self.patient_id_col_name: "case_id"}, inplace=True)
+        if (
+            self.slide_id_col_name != "slide_id"
+            and self.slide_id_col_name in df.columns
+        ):
+            df.rename(columns={self.slide_id_col_name: "slide_id"}, inplace=True)
+        if "case_id" not in df.columns:
+            raise ValueError(
+                f"Patient ID column '{self.patient_id_col_name}' (expected 'case_id') not found in CSV."
+            )
+        if "slide_id" not in df.columns:
+            raise ValueError(
+                f"Slide ID column '{self.slide_id_col_name}' (expected 'slide_id') not found in CSV."
+            )
+        return df
+
+    def _filter_data(
+        self, data: pd.DataFrame, filter_criteria: Optional[Dict[str, List[str]]] = None
+    ) -> pd.DataFrame:
+        if filter_criteria:
+            mask = pd.Series(True, index=data.index)
+            for column, values in filter_criteria.items():
+                if column not in data.columns:
+                    print(f"Warning: Filter column '{column}' not found in data.")
+                    continue
+                mask &= data[column].isin(values)
+            data = data[mask].reset_index(drop=True)
+        return data
+
+    def _prepare_labels(
+        self, data: pd.DataFrame, ignore_labels_str: Optional[List[str]]
+    ) -> pd.DataFrame:
+        data = data.copy()
+        if self.provided_label_column not in data.columns:
+            raise ValueError(
+                f"Provided label column '{self.provided_label_column}' not found in CSV."
+            )
+
+        # Keep original string labels in 'label_str' for mapping and ignoring
+        data["label_str"] = data[self.provided_label_column].astype(str)
+
+        if ignore_labels_str:
+            data = data[~data["label_str"].isin(ignore_labels_str)].reset_index(
+                drop=True
+            )
+
+        # Integer mapping will be applied after potential inference in __init__
+        return data
+
+    def _aggregate_patient_data(self, aggregation_method: str = "max") -> None:
+        if (
+            "case_id" not in self.slide_data.columns
+            or "label" not in self.slide_data.columns
+        ):
+            print(
+                "Warning: 'case_id' or 'label' not fully prepared for patient aggregation."
+            )
+            self.patient_data = pd.DataFrame(columns=["case_id", "label"])
+            return
+
+        patients = self.slide_data["case_id"].unique()
+        patient_labels_agg = []
+
+        for patient_id in patients:
+            labels = self.slide_data.loc[
+                self.slide_data["case_id"] == patient_id, "label"
+            ].values
+            if len(labels) == 0:
+                continue  # Should not happen if patient_id is from slide_data
+
+            if aggregation_method == "max":
+                aggregated_label = labels.max()
+            elif aggregation_method == "majority":
+                aggregated_label = mode(labels, keepdims=True).mode[0]
+            else:
+                raise ValueError(
+                    f"Invalid patient_label_aggregation: {aggregation_method}"
+                )
+            patient_labels_agg.append(aggregated_label)
+
+        self.patient_data = pd.DataFrame(
+            {"case_id": patients, "label": patient_labels_agg}
+        )
+
+    def _prepare_class_indices(self) -> None:
+        if self.num_classes > 0:
+            self.patient_class_indices = [
+                np.where(self.patient_data["label"] == cls_label)[0]
+                for cls_label in range(self.num_classes)
+            ]
+            self.slide_class_indices = [
+                np.where(self.slide_data["label"] == cls_label)[0]
+                for cls_label in range(self.num_classes)
+            ]
+        else:
+            self.patient_class_indices = []
+            self.slide_class_indices = []
+
+    def _print_summary(self) -> None:
+        print("--- Classification DataManager Summary ---")
+        print(f"CSV Path: {self.csv_path}")
+        print(f"Label Column (original): {self.provided_label_column}")
+        print(f"Patient ID Column (original): {self.patient_id_col_name}")
+        print(f"Slide ID Column (original): {self.slide_id_col_name}")
+        print(f"Label Mapping: {self.label_mapping}")
+        print(f"Number of Classes: {self.num_classes}")
+        print(f"Total unique slides: {self.slide_data['slide_id'].nunique()}")
+        print(f"Total unique patients: {self.patient_data['case_id'].nunique()}")
+
+        if self.num_classes > 0:
+            print("\nSlide-level counts (after mapping):")
+            print(self.slide_data["label"].value_counts(sort=False))
+            print("\nPatient-level counts (after aggregation and mapping):")
+            print(self.patient_data["label"].value_counts(sort=False))
+        else:
+            print("\nNo classes defined or no data loaded.")
+        print("----------------------------------------")
+
+    def create_k_fold_splits(
+        self, num_folds: int = 5, test_set_size: float = 0.1
+    ) -> None:
+        if self.patient_data.empty:
+            raise ValueError("Patient data is empty. Cannot create splits.")
+
+        # Create initial test set from patients
+        if test_set_size > 0:
+            train_val_patients_df, test_patients_df = train_test_split(
+                self.patient_data,
+                test_size=test_set_size,
+                stratify=self.patient_data["label"],
+                random_state=self.random_seed,
+            )
+            self.test_patient_ids = test_patients_df["case_id"].tolist()
+        else:
+            train_val_patients_df = self.patient_data.copy()
+            self.test_patient_ids = []
+
+        if num_folds > 0 and not train_val_patients_df.empty:
+            skf = StratifiedKFold(
+                n_splits=num_folds, shuffle=True, random_state=self.random_seed
+            )
+            # Ensure indices are reset for iloc to work correctly with skf.split
+            self.train_val_patient_data_for_kfold = train_val_patients_df.reset_index(
+                drop=True
+            )
+            self.kfold_splits = list(
+                skf.split(
+                    self.train_val_patient_data_for_kfold,
+                    self.train_val_patient_data_for_kfold["label"],
+                )
+            )
+        else:
+            # If no k-folds, all train_val_patients become train, and val is empty
+            self.train_patient_ids = train_val_patients_df["case_id"].tolist()
+            self.val_patient_ids = []
+            self.kfold_splits = None  # Explicitly set to None
+
+        if self.verbose:
+            print(
+                f"Created {num_folds}-fold splits with test set size {test_set_size}."
+            )
+            print(f"Total patients for K-Fold Train/Val: {len(train_val_patients_df)}")
+            print(f"Total patients for Test: {len(self.test_patient_ids)}")
+
+    def set_current_fold(self, fold_index: int = 0) -> None:
+        if (
+            self.kfold_splits is None and self.train_patient_ids is not None
+        ):  # Test set only or no kfold case
+            # Test patient IDs are already set in create_k_fold_splits
+            # Train/Val patient IDs are also set if no kfold
+            pass  # Patient IDs are already set
+        elif self.kfold_splits is None or self.train_val_patient_data_for_kfold is None:
+            raise ValueError(
+                "K-Fold splits have not been created. Call create_k_fold_splits() first."
+            )
+        elif fold_index >= len(self.kfold_splits):
+            raise ValueError(
+                f"Fold index {fold_index} is out of bounds for {len(self.kfold_splits)} folds."
+            )
+        else:
+            train_patient_indices_in_kfold_df, val_patient_indices_in_kfold_df = (
+                self.kfold_splits[fold_index]
+            )
+
+            train_patients_df = self.train_val_patient_data_for_kfold.iloc[
+                train_patient_indices_in_kfold_df
+            ]
+            val_patients_df = self.train_val_patient_data_for_kfold.iloc[
+                val_patient_indices_in_kfold_df
+            ]
+
+            self.train_patient_ids = train_patients_df["case_id"].tolist()
+            self.val_patient_ids = val_patients_df["case_id"].tolist()
+            # self.test_patient_ids was set during create_k_fold_splits
+
+        # Map patient IDs to slide indices
+        self.train_slide_indices = (
+            self.slide_data[
+                self.slide_data["case_id"].isin(self.train_patient_ids)
+            ].index.tolist()
+            if self.train_patient_ids
+            else []
+        )
+        self.val_slide_indices = (
+            self.slide_data[
+                self.slide_data["case_id"].isin(self.val_patient_ids)
+            ].index.tolist()
+            if self.val_patient_ids
+            else []
+        )
+        self.test_slide_indices = (
+            self.slide_data[
+                self.slide_data["case_id"].isin(self.test_patient_ids)
+            ].index.tolist()
+            if self.test_patient_ids
+            else []
+        )
+
+        if self.verbose:
+            print(f"Set to fold {fold_index}:")
+            print(
+                f"  Train patients: {len(self.train_patient_ids)}, Train slides: {len(self.train_slide_indices)}"
+            )
+            print(
+                f"  Val patients: {len(self.val_patient_ids)}, Val slides: {len(self.val_slide_indices)}"
+            )
+            print(
+                f"  Test patients: {len(self.test_patient_ids)}, Test slides: {len(self.test_slide_indices)}"
+            )
+
+    def get_mil_datasets(
+        self,
+        backbone: str,
+        patch_size: str = "",
+        use_hdf5: bool = False,
+        cache_enabled: bool = False,
+    ) -> Tuple[
+        Optional[WSIMILDataset], Optional[WSIMILDataset], Optional[WSIMILDataset]
+    ]:
+        if (
+            self.train_slide_indices is None
+            or self.val_slide_indices is None
+            or self.test_slide_indices is None
+        ):
+            raise ValueError(
+                "Splits/fold not set. Call create_k_fold_splits() and then set_current_fold() first."
+            )
+
+        train_df_split = self.slide_data.iloc[self.train_slide_indices].reset_index(
+            drop=True
+        )
+        val_df_split = self.slide_data.iloc[self.val_slide_indices].reset_index(
+            drop=True
+        )
+        test_df_split = self.slide_data.iloc[self.test_slide_indices].reset_index(
+            drop=True
+        )
+
+        common_params = {
+            "data_directory": self.data_directory,
+            "num_classes": self.num_classes,
+            "backbone": backbone,
+            "patch_size": patch_size,
+            "use_hdf5": use_hdf5,
+            "cache_enabled": cache_enabled,
+        }
+
+        train_dataset = (
+            WSIMILDataset(slide_data_df=train_df_split, **common_params)
+            if not train_df_split.empty
+            else None
+        )
+        val_dataset = (
+            WSIMILDataset(slide_data_df=val_df_split, **common_params)
+            if not val_df_split.empty
+            else None
+        )
+        test_dataset = (
+            WSIMILDataset(slide_data_df=test_df_split, **common_params)
+            if not test_df_split.empty
+            else None
+        )
+
+        return train_dataset, val_dataset, test_dataset
+
+    def get_number_of_folds(self) -> int:
+        return len(self.kfold_splits) if self.kfold_splits is not None else 0
+
+    def save_current_split_patient_ids(self, filename: str) -> None:
+        if (
+            self.train_patient_ids is None
+            or self.val_patient_ids is None
+            or self.test_patient_ids is None
+        ):
+            raise ValueError("Splits not set. Call set_current_fold() first.")
+
+        # Pad lists to the same length for DataFrame creation
+        max_len = max(
+            len(self.train_patient_ids or []),
+            len(self.val_patient_ids or []),
+            len(self.test_patient_ids or []),
+        )
+
+        train_ids_padded = (self.train_patient_ids or []) + [None] * (
+            max_len - len(self.train_patient_ids or [])
+        )
+        val_ids_padded = (self.val_patient_ids or []) + [None] * (
+            max_len - len(self.val_patient_ids or [])
+        )
+        test_ids_padded = (self.test_patient_ids or []) + [None] * (
+            max_len - len(self.test_patient_ids or [])
+        )
+
+        splits_df = pd.DataFrame(
+            {
+                "train_patient_id": train_ids_padded,
+                "val_patient_id": val_ids_padded,
+                "test_patient_id": test_ids_padded,
+            }
+        )
+        splits_df.to_csv(filename, index=False)
+        if self.verbose:
+            print(f"Current split patient IDs saved to {filename}")
+
+    def summarize_current_splits(
+        self, return_summary_df: bool = False
+    ) -> Optional[pd.DataFrame]:
+        if self.train_slide_indices is None:
+            print("No split set. Call set_current_fold() first.")
+            return None
+
+        summary_data = {}
+        class_map_inv = {v: k for k, v in self.label_mapping.items()}
+
+        for split_name, slide_indices in [
+            ("train", self.train_slide_indices),
+            ("val", self.val_slide_indices),
+            ("test", self.test_slide_indices),
+        ]:
+            if slide_indices is None:
+                continue
+            labels = self.slide_data.loc[slide_indices, "label"]
+            counts = labels.value_counts().sort_index()
+            summary_data[split_name] = {
+                class_map_inv.get(cls_idx, f"UnknownClass_{cls_idx}"): count
+                for cls_idx, count in counts.items()
+            }
+            if self.verbose:
+                print(f"\n--- {split_name.upper()} Split Summary ---")
+                print(f"Number of slides: {len(slide_indices)}")
+                print(
+                    f"Number of patients: {len(self.slide_data.loc[slide_indices, 'case_id'].unique())}"
+                )
+                for cls_idx, count in counts.items():
+                    class_name = class_map_inv.get(cls_idx, f"UnknownClass_{cls_idx}")
+                    print(f"  Class {cls_idx} ({class_name}): {count} slides")
+
+        if return_summary_df:
+            df = pd.DataFrame(summary_data).fillna(0).astype(int)
+            return df
+        return None
+
+
+class WSIMILDataset(Dataset):
+    def __init__(
+        self,
+        slide_data_df: pd.DataFrame,
+        data_directory: Union[str, Dict[str, str]],
+        num_classes: int,  # For consistency, though label is in slide_data_df
+        backbone: Optional[str] = None,
+        patch_size: str = "",
+        use_hdf5: bool = False,
+        cache_enabled: bool = False,
+    ):
+        self.slide_data = slide_data_df  # DataFrame for this specific split
+        self.data_directory = data_directory
+        self.num_classes = num_classes
+        self.backbone = backbone
+        self.patch_size = (
+            str(patch_size) if patch_size is not None else ""
+        )  # Ensure string
+        self.use_hdf5 = use_hdf5
+        self.cache_enabled = cache_enabled
+        self.data_cache: Dict[str, torch.Tensor] = {}
+
+        if not self.use_hdf5 and not self.backbone:
+            print(
+                "Warning: WSIMILDataset initialized for .pt files but backbone is not set. Call set_backbone()."
+            )
+
+    def __len__(self) -> int:
+        return len(self.slide_data)
+
+    def __getitem__(
+        self, idx: int
+    ) -> Union[Tuple[torch.Tensor, int], Tuple[torch.Tensor, int, np.ndarray]]:
+        row = self.slide_data.iloc[idx]
+        slide_id = row["slide_id"]
+        label = row["label"]  # Assumes 'label' is already integer mapped
+
+        current_data_dir_path: str
+        if isinstance(self.data_directory, dict):
+            source_col = "source"  # This column must exist in slide_data_df if data_directory is a dict
+            if source_col not in row.index:
+                raise ValueError(
+                    f"'{source_col}' column missing in slide_data for multi-source data_directory. Slide ID: {slide_id}"
+                )
+            source = row[source_col]
+            if source not in self.data_directory:
+                raise ValueError(
+                    f"Source '{source}' for slide '{slide_id}' not found in data_directory keys: {list(self.data_directory.keys())}"
+                )
+            current_data_dir_path = self.data_directory[source]
+        else:  # data_directory is a string
+            current_data_dir_path = self.data_directory
+
+        if not os.path.isdir(current_data_dir_path):
+            raise FileNotFoundError(
+                f"Data directory for slide {slide_id} not found: {current_data_dir_path}"
+            )
+
+        if not self.use_hdf5:
+            if not self.backbone:
+                raise ValueError(
+                    "Backbone must be set for loading .pt files. Call set_backbone()."
+                )
+
+            # Handle cases like patch_size='512' or patch_size='' for root, vs. patch_size='256' for subdir
+            patch_subdir = ""
+            if (
+                self.patch_size and self.patch_size != "512"
+            ):  # Assuming '512' means no subdir or handled differently
+                patch_subdir = self.patch_size
+
+            # Construct path: data_dir / (optional_patch_subdir) / pt_files / backbone / slide_id.pt
+            file_path = os.path.join(
+                current_data_dir_path,
+                patch_subdir,
+                "pt_files",
+                self.backbone,
+                f"{slide_id}.pt",
+            )
+
+            cached_features = self.data_cache.get(file_path)
+            if cached_features is not None:
+                return cached_features, label
+
+            try:
+                features = torch.load(file_path)
+                if self.cache_enabled:
+                    self.data_cache[file_path] = features
+                return features, label
+            except FileNotFoundError as e:
+                new_error_msg = f"Feature file not found: {file_path}. Check slide_id, backbone, patch_size, and data_directory structure."
+                print(
+                    f"Details: Slide ID='{slide_id}', Backbone='{self.backbone}', Patch Size='{self.patch_size}', Dir='{current_data_dir_path}'"
+                )
+                raise FileNotFoundError(new_error_msg) from e
+            except Exception as e:
+                raise RuntimeError(f"Error loading {file_path}: {e}") from e
+        else:
+            file_path = os.path.join(
+                current_data_dir_path, "h5_files", f"{slide_id}.h5"
+            )
+            # HDF5 typically isn't cached in memory this way due to size, but could be if small
+            try:
+                with h5py.File(file_path, "r") as hdf5_file:
+                    features = torch.from_numpy(hdf5_file["features"][:])
+                    # Coordinates are optional, decide if they are always needed
+                    if "coords" in hdf5_file:
+                        coordinates = hdf5_file["coords"][:]
+                        return features, label, coordinates
+                    return features, label
+            except OSError as e:
+                raise OSError(f"HDF5 file not found or corrupted: {file_path}") from e
+
+    def set_backbone(self, backbone: str) -> None:
+        if self.verbose:
+            print(f"Setting backbone for MILDataset: {backbone}")
+        self.backbone = backbone
+
+    def set_patch_size(self, size: Union[str, int]) -> None:
+        if self.verbose:
+            print(f"Setting patch size for MILDataset: {size}")
+        self.patch_size = str(size)  # Ensure string
+
+    def load_from_hdf5(self, use_hdf5: bool) -> None:
+        self.use_hdf5 = use_hdf5
+
+    def preload_data(self, num_threads: int = 8) -> None:
+        if not self.cache_enabled:
+            print(
+                "Warning: Preloading data but cache_enabled is False. Data will not be stored in memory."
+            )
+            self.cache_enabled = True  # Enable it for preloading
+
+        print(f"Preloading {len(self)} items into cache using {num_threads} threads...")
+        from multiprocessing.pool import ThreadPool
+
+        indices = list(range(len(self)))
+        with ThreadPool(num_threads) as pool:
+            pool.map(self.__getitem__, indices)
+        print("Preloading complete.")
+
+    @property
+    def verbose(
+        self,
+    ):  # Simple way to make it accessible if needed, or pass as init arg
+        return True  # Or control via an __init__ param
