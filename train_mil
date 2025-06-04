@@ -3,7 +3,7 @@ import argparse
 import os
 import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
-
+import json
 # Sauron specific imports
 from sauron.parse.argparse import get_args # Assuming get_args is here
 from sauron.utils.environment_setup import (
@@ -12,167 +12,224 @@ from sauron.utils.environment_setup import (
     create_results_directory,
     log_experiment_details,
 )
-from sauron.data.dataset_factory import get_dataset, determine_split_directory
+from sauron.data.dataset_factory import get_data_manager, determine_split_directory
 from sauron.training.pipeline import train_fold # This is the refactored train_fold
 from sauron.utils.generic_utils import log_results, save_pkl # Assuming these are general utils
 
 def run_experiment_folds(
-    dataset_instance, # Renamed from 'dataset' to avoid conflict with 'datasets' from return_splits
+    data_manager, # Now takes a DataManager instance
     args: argparse.Namespace,
-    experiment_results_dir: str # Pass the main experiment results dir for fold-level saving
+    experiment_main_results_dir: str
 ) -> pd.DataFrame:
     """
     Manages the k-fold cross-validation loop.
     """
-    # Define expected metrics based on task type for clarity
-    if args.task_type == "classification":
-        metric_keys = ["test_auc", "val_auc", "test_acc", "val_acc"]
-    elif args.task_type == "survival":
-        metric_keys = ["test_c_index", "val_c_index"] # Example for survival
-        # train_fold must return these for survival task
+    if args.task_type.lower() == "classification":
+        metric_keys = ["test_auc", "val_auc", "test_acc", "val_acc"] # Expected from train_fold
+    elif args.task_type.lower() == "survival":
+        metric_keys = ["test_c_index", "val_c_index"] # Example, ensure train_fold returns these
     else:
         raise ValueError(f"Unknown task_type: {args.task_type} for defining metrics.")
     
     all_fold_metrics = {key: [] for key in metric_keys}
 
-    # Dataset creates and manages its own splits internally based on k
-    dataset_instance.create_splits(k=args.k, seed=args.seed, split_dir=args.split_dir, val_frac = getattr(args, "val_frac", 0.2))
+    # DataManager creates and manages its own splits internally
+    # For ClassificationDataManager:
+    if args.task_type.lower() == "classification":
+        data_manager.create_k_fold_splits(num_folds=args.k, test_set_size=getattr(args, "test_frac", 0.1))
+        num_actual_folds = data_manager.get_number_of_folds()
+        if num_actual_folds == 0 and args.k > 0 : # No k-folds, but test set might exist
+            print("No K-folds generated (num_folds=0 in DataManager), running as single train/test split if test_frac > 0.")
+            # In this case, loop runs once if test_set_size > 0, setting fold_idx=0
+            # DataManager's set_current_fold(0) will use the pre-test-split train/val if k_fold_splits is None
+            # We need to handle the loop range for this scenario.
+            # If k=0 or 1, this means non-kfold run.
+            # If create_k_fold_splits(num_folds=0), it implies only train/test split.
+            # Let's assume if args.k=0 or 1, it's a single run.
+            if args.k <= 1: # Consider 0 or 1 fold as a single run (train/val/test)
+                loop_range = range(1) # Run once for the main split
+                print(f"Running a single train/val/test split (args.k={args.k}).")
+            else: # k > 1 but num_actual_folds is 0 - this is an issue
+                raise ValueError(f"args.k={args.k} but DataManager created 0 folds. Check data or split logic.")
+        else:
+             loop_range = range(args.k_start, min(args.k_end, num_actual_folds))
 
-    for i in range(args.k_start, args.k_end):
+    # For SurvivalDataManager:
+    elif args.task_type.lower() == "survival":
+        # Assuming create_splits_from_generating_function is what you want for survival
+        data_manager.create_splits_from_generating_function(
+            k=args.k,
+            # Pass other relevant args for generate_split if needed (e.g. val_num, test_num)
+            # These would need to be added to your main argparse
+            val_num=getattr(args, "val_num_survival", (0.15, 0.15)), # Example: 15% for val
+            test_num=getattr(args, "test_num_survival", (0.15, 0.15)) # Example: 15% for test
+        )
+        # The loop for survival will use set_next_fold_from_generator
+        # Loop will run args.k times, or until generator is exhausted.
+        loop_range = range(args.k_start, args.k_end) # Assuming generator produces k_end - k_start folds
+    else:
+        raise ValueError(f"Task type {args.task_type} split creation not defined.")
+
+
+    for i in loop_range: # loop_range is now correctly defined based on task_type
         print(f"\n{'='*10} Processing Fold: {i} {'='*10}")
         
-        # Fold-specific results directory (for logs, checkpoints from train_fold)
-        # This is now handled INSIDE train_fold. train_fold receives `experiment_results_dir`
-        # and creates `experiment_results_dir/fold_i` itself.
+        # Set the current fold in the DataManager
+        if args.task_type.lower() == "classification":
+            data_manager.set_current_fold(fold_index=i)
+        elif args.task_type.lower() == "survival":
+            if not data_manager.set_next_fold_from_generator(start_from_fold= i if i == args.k_start else None): # Only use start_from for the very first iteration
+                print(f"SurvivalDataManager's split generator exhausted before reaching fold {i}.")
+                break # Exit loop if no more folds from generator
         
-        dataset_instance.set_splits(fold_idx=i) # Tell dataset to use fold 'i'
-        
-        # `return_splits` should give (train_dataset, val_dataset, test_dataset_or_None)
-        # It needs to know about args.backbone and args.patch_size for feature path resolution
-        # or these need to be part of the dataset's internal config.
-        # Assuming GenericMILDataset's return_splits handles this.
-        current_fold_datasets = dataset_instance.return_splits(
-            from_id=True, # This seems specific to how features are loaded
-            # Potentially pass feature-related args if dataset needs them here:
-            # backbone=args.backbone, patch_size=args.patch_size 
-        )
+        # Get MILDataset instances for the current fold
+        # Common MILDataset parameters from args
+        mil_dataset_params = {
+            "backbone": args.backbone,
+            "patch_size": args.patch_size,
+            "use_hdf5": getattr(args, "use_hdf5", False),
+            "cache_enabled": getattr(args, "preloading", "no").lower() == "yes",
+        }
+        # Survival specific MILDataset params
+        if args.task_type.lower() == "survival":
+            mil_dataset_params["mode"] = args.survival_mode # e.g., 'pathomic', 'omic', etc. Needs to be an arg
 
-        if args.preloading == "yes":
+        train_dataset, val_dataset, test_dataset = data_manager.get_mil_datasets(**mil_dataset_params)
+
+        if getattr(args, "preloading", "no").lower() == "yes":
             print(f"Preloading data for fold {i}...")
-            for d_idx, d in enumerate(current_fold_datasets):
-                if d is not None: # test_split can be None
-                    print(f"  Preloading dataset part {d_idx} ({type(d).__name__})...")
-                    d.pre_loading() # Ensure pre_loading exists on dataset objects
+            if train_dataset: train_dataset.preload_data()
+            if val_dataset: val_dataset.preload_data()
+            if test_dataset: test_dataset.preload_data() # test_dataset can be None
 
-        # train_fold now handles its own SummaryWriter for fold-specific logs
-        # It needs the main experiment_results_dir to create its fold-specific sub-directory.
+        # train_fold is assumed to handle its own SummaryWriter for fold-specific logs
         fold_results_tuple = train_fold(
-            datasets=current_fold_datasets, 
+            train_dataset=train_dataset,
+            test_dataset=test_dataset,
             cur_fold_num=i, 
-            args=args,
-            # Removed task_type as it should be in args
-            # experiment_base_results_dir=experiment_results_dir # Pass main dir
+            args=args, # args should contain task_type, n_classes, etc.
+            experiment_base_results_dir=experiment_main_results_dir # Pass main dir for fold_i subdir
         )
-        # train_fold returns:
-        # Classification (non-kfold): (results_dict, test_metric, val_metric, test_acc, val_acc_placeholder)
-        # Survival (non-kfold): (results_dict, test_cindex, val_cindex)
-        # k-fold mode: val_metric (e.g. val_auc or val_cindex)
         
-        if args.k_fold: # Special handling for k-fold return from train_fold
-            # If train_fold in k-fold mode returns only val_metric, we need to adjust
-            # For now, assuming train_fold returns the full tuple even in k-fold,
-            # and we just use the val_metric. Or, train_fold's signature needs adjustment.
-            # Let's assume train_fold returns a simplified tuple for k-fold or we extract.
-            # The original code implies train_fold returns more than just val_metric.
-            # The unpack `results, *metrics` suggests this.
-            
-            patient_level_results_dict, *fold_metrics_values = fold_results_tuple
-        else: # Not k-fold, means it's a single run with train/val/test
-             patient_level_results_dict, *fold_metrics_values = fold_results_tuple
-
+        patient_level_results_dict, *fold_metrics_values = fold_results_tuple
 
         if len(fold_metrics_values) != len(metric_keys):
             raise ValueError(
-                f"Mismatch in number of metrics returned by train_fold ({len(fold_metrics_values)}) "
-                f"and expected metric_keys ({len(metric_keys)}). "
-                f"Task: {args.task_type}. Check train_fold's return for this task."
+                f"Mismatch in metrics from train_fold ({len(fold_metrics_values)}) vs expected ({len(metric_keys)}). "
+                f"Task: {args.task_type}. Returned: {fold_metrics_values}"
             )
 
-        for key, value in zip(metric_keys, fold_metrics_values):
-            all_fold_metrics[key].append(value)
-            # Main summary writer (passed to this func) can log aggregated fold metrics
-            # writer_main.add_scalar(f"FoldMetrics/{key}_fold_{i}", value, i) # Optional
+        for key_idx, metric_value in enumerate(fold_metrics_values):
+            metric_name = metric_keys[key_idx]
+            all_fold_metrics[metric_name].append(metric_value)
 
-        if patient_level_results_dict: # If train_fold returned detailed results
-            fold_results_pkl_path = os.path.join(experiment_results_dir, f"fold_{i}_results.pkl")
+        if patient_level_results_dict:
+            fold_results_pkl_path = os.path.join(experiment_main_results_dir, f"fold_{i}_results.pkl")
             save_pkl(fold_results_pkl_path, patient_level_results_dict)
             print(f"Saved patient-level results for fold {i} to {fold_results_pkl_path}")
+    
+    # Check if any folds were actually run
+    num_folds_run = len(all_fold_metrics[metric_keys[0]]) if metric_keys and all_fold_metrics[metric_keys[0]] else 0
+    if num_folds_run == 0:
+        print("No folds were successfully processed. Returning empty DataFrame.")
+        return pd.DataFrame()
 
-    return pd.DataFrame({"fold_num": range(args.k_start, args.k_end), **all_fold_metrics})
+    fold_num_series = list(range(args.k_start, args.k_start + num_folds_run))
+    return pd.DataFrame({"fold_num": fold_num_series, **all_fold_metrics})
 
 
 def main_experiment_runner(args: argparse.Namespace):
     """
     Main function to run the entire experiment.
     """
-    # 1. Initial Setup (device, seed, main results directory)
-    _ = setup_device() # Device setup, not strictly needed to be stored if not used directly here
+    _ = setup_device()
     seed_everything(args.seed)
     
-    # This is the main experiment directory, e.g., results_dir/exp_code_s{seed}
-    # Individual folds will create subdirectories within this.
     experiment_main_results_dir = create_results_directory(
         args.results_dir, args.exp_code, args.seed
     )
-    args.results_dir = experiment_main_results_dir # Update args to reflect the true main results path
-                                                  # So train_fold can use it as a base.
+    args.results_dir = experiment_main_results_dir # Update args for train_fold
     log_experiment_details(args, experiment_main_results_dir)
 
-    # 2. Determine and validate split directory
-    # This split_dir is where pre-generated split files (e.g., CSVs defining folds) might reside.
-    # Or, if splits are generated on-the-fly, it could be where they are saved.
-    args.split_dir = determine_split_directory(
-        args.split_dir, args.task_name, args.label_frac, args.k_fold > 1 # k_fold is num_folds
+    # Determine split directory (where DataManager might save split definitions if asked)
+    # This is more for organizing outputs than for DataManager to read from, unless you implement that.
+    args.split_dir_determined = determine_split_directory( # Store in a new arg field
+        getattr(args, "split_dir_base", None), # Base for auto-generated split dir names
+        args.task_name, 
+        getattr(args, "label_frac", 1.0), 
+        args.k > 1 # k_fold is true if num_folds > 1
     )
-    # If splits are *required* to be pre-existing:
-    if not os.path.isdir(args.split_dir) and getattr(args, "use_predefined_splits", False):
-         raise NotADirectoryError(f"Predefined split directory does not exist: {args.split_dir}")
-    os.makedirs(args.split_dir, exist_ok=True) # Ensure it exists if we plan to save splits there
+    os.makedirs(args.split_dir_determined, exist_ok=True)
 
-    # 3. Setup TensorBoard Writer for overall experiment summary (optional)
-    # train_fold will create its own writer for fold-specific logs.
-    # This writer is for higher-level summaries across folds.
     with SummaryWriter(log_dir=os.path.join(experiment_main_results_dir, "summary_all_folds")) as summary_writer:
         
-        # 4. k-fold start/end setup (already in original main)
         args.k_start = max(0, args.k_start)
+        # args.k_end should be such that loop runs for args.k folds, or up to actual num_folds
+        # If args.k is the total number of folds intended:
         args.k_end = args.k if args.k_end == -1 or args.k_end > args.k else args.k_end
-        if args.k_start >= args.k_end:
+        
+        if args.k_start >= args.k_end and args.k > 0 : # k_end is exclusive
             print(f"Warning: k_start ({args.k_start}) is >= k_end ({args.k_end}). No folds will be run.")
             return
 
-        # 5. Load the dataset
-        # GenericMILDataset parameters should be configurable via args
-        dataset_instance = get_dataset(
-            task_name=args.task_name, # Changed from args.task to args.task_name
-            csv_path=getattr(args, "dataset_csv", None), # Make CSV path an arg
-            label_col=getattr(args, "label_col", "label"),
-            label_dict=None, # Can be inferred or passed as JSON string arg
-            slide_id_col=getattr(args, "slide_id_col", "slide_id"),
-            seed=args.seed,
-            data_dir=args.data_root_dir, # Path to features
-            patient_id_col=getattr(args, "patient_id_col", None)
-        )
-        args.n_classes = dataset_instance.n_classes # Get n_classes from dataset instance
-        if not hasattr(args, 'task_type') or args.task_type is None: # Ensure task_type is set
-            args.task_type = getattr(args, "default_task_type", "classification") # e.g. "classification" or "survival"
+        manager_params = {
+            "task_name": args.task_name,
+            "task_type": args.task_type,
+            "csv_path": args.dataset_csv,
+            "data_directory": args.data_root_dir,
+            "seed": args.seed,
+            "verbose": getattr(args, "verbose_data", True),
+            # Classification specific from args
+            "label_column": getattr(args, "label_col", "label"),
+            "patient_id_col_name": getattr(args, "patient_id_col", "case_id"),
+            "slide_id_col_name": getattr(args, "slide_id_col", "slide_id"),
+            "filter_criteria": json.loads(args.filter_criteria) if hasattr(args, "filter_criteria") and args.filter_criteria else None,
+            "ignore_labels": args.ignore_labels.split(',') if hasattr(args, "ignore_labels") and args.ignore_labels else None,
+            "patient_label_aggregation": getattr(args, "patient_label_aggregation", "max"),
+            "shuffle": getattr(args, "shuffle_data", False), # For ClassificationDataManager initial load
+            # Survival specific from args
+            "time_column": getattr(args, "time_col", None),
+            "event_column": getattr(args, "event_col", None),
+            "n_bins": getattr(args, "n_bins_survival", 4),
+            "filter_dict": json.loads(args.filter_dict_survival) if hasattr(args, "filter_dict_survival") and args.filter_dict_survival else None,
+            "omic_csv_path": getattr(args, "omic_csv", None),
+            "omic_patient_id_col": getattr(args, "omic_patient_id_col", "case_id"),
+            "apply_sig": getattr(args, "apply_sig_survival", False),
+            "signatures_csv_path": getattr(args, "signatures_csv", None),
+            "shuffle_slide_data": getattr(args, "shuffle_data_survival", False), # For SurvivalDataManager
+        }
 
-        # 6. Process folds
-        print(f"Starting experiment: {args.exp_code} with {args.k}-fold CV from fold {args.k_start} to {args.k_end-1}")
-        overall_results_df = run_experiment_folds(dataset_instance, args, experiment_main_results_dir)
+       # Parse label_mapping if provided as a JSON string
+        label_mapping_str = getattr(args, "label_mapping", None)
+        if label_mapping_str:
+            try:
+                manager_params["label_mapping"] = json.loads(label_mapping_str)
+            except json.JSONDecodeError:
+                raise ValueError(f"Invalid JSON string for label_mapping: {label_mapping_str}")
+        else:
+            manager_params["label_mapping"] = None
+
+
+        data_manager_instance = get_data_manager(**manager_params)
         
-        # 7. Log aggregated results
-        log_results(overall_results_df, args, summary_writer) # log_results should handle writer
+        # Get n_classes from DataManager and set it in args for train_fold
+        args.n_classes = data_manager_instance.num_classes
+        print(f"DataManager initialized. Number of classes: {args.n_classes}")
+        if args.n_classes == 0 and args.task_type.lower() == "classification":
+            print("Warning: Number of classes is 0 for classification task. Check data and label mapping.")
+            # Potentially stop if this is critical, or let it proceed if some datasets might be empty
+            # For now, let it proceed, but train_fold might fail.
+        
+        print(f"Starting experiment: {args.exp_code} with up to {args.k} folds (from {args.k_start} to {args.k_end-1})")
+        overall_results_df = run_experiment_folds(data_manager_instance, args, experiment_main_results_dir)
+        
+        if not overall_results_df.empty:
+            log_results(overall_results_df, args, summary_writer)
+            print("\nAggregated Results over Folds:")
+            print(overall_results_df)
+        else:
+            print("No results to log as no folds were processed.")
+
 
 if __name__ == "__main__":
     args = get_args()  # Parse arguments

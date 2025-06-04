@@ -1,0 +1,374 @@
+import collections
+import math
+import os
+from itertools import (
+    islice,  # Keep for nth if still used elsewhere, not in this snippet
+)
+from typing import Any, Iterator, List, Optional, Tuple, Union
+
+import numpy as np
+import torch
+import torch.nn as nn  # Not used in this snippet, but kept if other utils in file use it
+import torch.optim as optim  # Not used in this snippet
+from torch.utils.data import (
+    DataLoader,
+    Dataset,  # Added for type hinting
+    RandomSampler,
+    Sampler,
+    SequentialSampler,
+    WeightedRandomSampler,
+)
+
+
+def make_weights_for_balanced_classes(
+    dataset: Dataset,  # Use the base torch Dataset for broader compatibility
+    # Assumes dataset has:
+    # 1. A way to get all labels: e.g., dataset.get_all_labels() -> List[int]
+    # OR 2. Direct access to labels: e.g., dataset.labels or dataset.slide_data['label']
+    # OR 3. `get_label(idx)` method as in your original (less efficient for all labels)
+) -> torch.Tensor:
+    """
+    Creates weights for WeightedRandomSampler for handling class imbalance.
+    This version is more flexible.
+
+    Args:
+        dataset: A PyTorch Dataset instance. It needs a way to access all labels.
+                 Common patterns:
+                 - `dataset.labels` (a list or tensor of all labels)
+                 - `dataset.slide_data['label']` (if slide_data is a pandas DataFrame)
+                 - A method like `dataset.get_all_labels()`
+
+    Returns:
+        torch.Tensor: A 1D tensor of weights for each sample in the dataset.
+    """
+    # Try to get labels in a more efficient way
+    all_labels: Optional[List[int]] = None
+    if hasattr(dataset, "labels") and isinstance(
+        dataset.labels, (list, np.ndarray, torch.Tensor)
+    ):
+        all_labels = list(dataset.labels)
+    elif (
+        hasattr(dataset, "slide_data")
+        and isinstance(dataset.slide_data, pd.DataFrame)
+        and "label" in dataset.slide_data.columns
+    ):
+        all_labels = dataset.slide_data["label"].tolist()
+    elif hasattr(dataset, "get_all_labels") and callable(dataset.get_all_labels):
+        all_labels = dataset.get_all_labels()
+    elif hasattr(dataset, "getlabel") and callable(
+        dataset.getlabel
+    ):  # Fallback to less efficient original
+        print(
+            "Warning: Using inefficient `getlabel(idx)` for each sample to compute weights. "
+            "Consider adding a `labels` attribute or `get_all_labels()` method to your dataset for performance."
+        )
+        all_labels = [dataset.getlabel(i) for i in range(len(dataset))]
+    else:
+        raise AttributeError(
+            "Dataset does not have a recognized way to access all labels "
+            "(e.g., 'labels' attribute, 'slide_data[\"label\"]', "
+            "or 'get_all_labels()' / 'getlabel()' method)."
+        )
+
+    if not all_labels:  # Should be caught by AttributeError, but as a safeguard
+        raise ValueError("Could not extract labels from the dataset.")
+
+    label_counts = collections.Counter(all_labels)
+    num_samples = len(all_labels)
+
+    if not label_counts:  # No labels or empty dataset
+        return torch.ones(num_samples, dtype=torch.double)
+
+    # Calculate weight for each class: N / (num_classes * count_for_that_class)
+    # This is a common formula. Original: N_total_classes / count_for_that_class
+    # Let's stick to a more standard approach: 1. / count_for_that_class then assign
+    # Or total_samples / (num_distinct_classes * count_of_class_i)
+
+    # Simpler: weight = 1.0 / count_of_sample's_class
+    # Then WeightedRandomSampler handles it.
+    # Or, if we want to give more weight to RARE classes:
+    # weight_per_class = {label: num_samples / count for label, count in label_counts.items()}
+
+    # The original implementation implied:
+    # weight_per_class[class_idx] = N_total_unique_classes / num_samples_in_class_idx
+    # This means dataset.slide_cls_ids was [[indices_for_class_0], [indices_for_class_1], ...]
+    # Let's try to replicate that logic if `slide_cls_ids` is available, otherwise use Counter.
+
+    if hasattr(dataset, "slide_cls_ids") and dataset.slide_cls_ids is not None:
+        # This was the original logic structure
+        num_distinct_classes = len(dataset.slide_cls_ids)  # N in original code
+        if num_distinct_classes == 0:  # No classes defined in slide_cls_ids
+            print("Warning: dataset.slide_cls_ids is empty. Returning uniform weights.")
+            return torch.ones(num_samples, dtype=torch.double)
+
+        weight_per_class_val = [0.0] * num_distinct_classes
+        for i, cls_ids in enumerate(dataset.slide_cls_ids):
+            if len(cls_ids) > 0:
+                weight_per_class_val[i] = float(num_distinct_classes) / len(cls_ids)
+            else:  # Class has no samples
+                weight_per_class_val[i] = 0  # Or some other handling for empty classes
+
+        # Check if getlabel exists before using it.
+        if not hasattr(dataset, "getlabel") or not callable(dataset.getlabel):
+            raise AttributeError(
+                "Dataset has 'slide_cls_ids' but no 'getlabel(idx)' method "
+                "to map sample index to class label for weighting."
+            )
+
+        weights = [
+            weight_per_class_val[dataset.getlabel(idx)] for idx in range(num_samples)
+        ]
+
+    else:  # Fallback to using all_labels and Counter if slide_cls_ids not present
+        print(
+            "Warning: `dataset.slide_cls_ids` not found or is None. "
+            "Calculating weights based on overall label counts."
+        )
+        if not label_counts:  # Already checked but good to be safe
+            return torch.ones(num_samples, dtype=torch.double)
+
+        # Standard approach: weight for a class is 1 / (number of samples in that class)
+        # Then, for each sample, assign the weight of its class.
+        # More robust against missing classes in label_counts if all_labels has them.
+        max_label = max(all_labels) if all_labels else -1
+        weight_per_class_val = [0.0] * (max_label + 1)
+        for label, count in label_counts.items():
+            if count > 0:
+                # weight_per_class_val[label] = 1.0 / count # Basic
+                weight_per_class_val[label] = num_samples / (
+                    len(label_counts) * count
+                )  # Another common one
+
+        weights = [weight_per_class_val[label] for label in all_labels]
+
+    return torch.tensor(weights, dtype=torch.double)
+
+
+class SubsetSequentialSampler(Sampler[int]):  # Use Generic type hint
+    """Samples elements sequentially from a given list of indices, always in the same order.
+
+    Args:
+        indices (List[int]): a sequence of indices
+    """
+
+    def __init__(self, indices: List[int]):
+        if not isinstance(indices, list):
+            raise TypeError("indices should be a list.")
+        if not all(isinstance(i, int) for i in indices):
+            raise TypeError("all elements in indices should be integers.")
+
+        self.indices = indices
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(self.indices)
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+
+def collate_mil_features(
+    batch: List[
+        Tuple[torch.Tensor, int]
+    ],  # Assumes batch item is (features_tensor, label_int)
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Collate function for MIL when batch items are (Tensor_Features, Label_Int).
+    Concatenates all feature tensors (bags) along dimension 0.
+    Labels are converted to a LongTensor.
+    """
+    # Filter out None items if any dataset returns None (e.g. for failed loads, though ideally handled in Dataset)
+    # batch = [item for item in batch if item is not None and item[0] is not None]
+    # if not batch:
+    #     # Handle empty batch case, e.g. return empty tensors or raise error
+    #     # This depends on how the training loop handles it.
+    #     # For now, assume batch is never empty after filtering.
+    #     # If it can be, the caller (DataLoader) might need a custom batch_sampler.
+    #     return torch.empty(0), torch.empty(0, dtype=torch.long)
+
+    try:
+        # Assuming item[0] is a tensor of features for one WSI (bag of instances)
+        # These features are typically [Number_of_Patches, Feature_Dimension]
+        # Concatenating them makes [Total_Patches_in_Batch, Feature_Dimension]
+        # This is standard for some MIL approaches where the model processes all patches from batch.
+        features = torch.cat([item[0] for item in batch], dim=0)
+        labels = torch.tensor([item[1] for item in batch], dtype=torch.long)
+    except Exception as e:
+        print("Error during collation (collate_mil_features):")
+        for i, item in enumerate(batch):
+            print(
+                f"  Item {i}: type={type(item)}, len={len(item) if isinstance(item, (tuple,list)) else 'N/A'}"
+            )
+            if isinstance(item, (tuple, list)) and len(item) > 0:
+                print(
+                    f"    Item[0] type: {type(item[0])}, shape: {item[0].shape if hasattr(item[0], 'shape') else 'N/A'}"
+                )
+                print(f"    Item[1] type: {type(item[1])}")
+        raise RuntimeError(f"Collation failed: {e}") from e
+
+    return features, labels
+
+
+def collate_mil_survival(
+    batch: List[
+        Tuple[
+            torch.Tensor, Union[torch.Tensor, Tuple[torch.Tensor, ...]], int, float, int
+        ]
+    ],
+    # Expected item: (path_features, omic_features, combined_label, event_time, censorship_status)
+    # omic_features can be a single Tensor or a Tuple of Tensors (for coattn)
+) -> Tuple[
+    torch.Tensor,
+    Union[torch.Tensor, Tuple[torch.Tensor, ...]],
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """
+    Collate function for Survival MIL tasks.
+    Handles path features, omic features (single or tuple for coattn), and survival labels.
+    """
+    path_features_list = [
+        item[0] for item in batch if item[0].numel() > 0
+    ]  # Filter empty path features
+    omic_features_list = [
+        item[1] for item in batch
+    ]  # Keep all, model must handle empty omics
+
+    combined_labels = torch.tensor([item[2] for item in batch], dtype=torch.long)
+    event_times = torch.tensor([item[3] for item in batch], dtype=torch.float32)
+    censorship_statuses = torch.tensor([item[4] for item in batch], dtype=torch.int)
+
+    # Collate path features (bag of instances)
+    collated_path_features = (
+        torch.cat(path_features_list, dim=0) if path_features_list else torch.empty(0)
+    )
+
+    # Collate omic features
+    collated_omic_features: Union[torch.Tensor, Tuple[torch.Tensor, ...]]
+    if isinstance(omic_features_list[0], torch.Tensor):  # All omics are single tensors
+        # Stack if they are per-patient vectors, cat if they are bags of omic instances (unlikely here)
+        # Assuming omic_features_list[i] is [omic_feature_dim] for patient i
+        collated_omic_features = (
+            torch.stack(omic_features_list, dim=0)
+            if omic_features_list
+            else torch.empty(0)
+        )
+    elif isinstance(
+        omic_features_list[0], tuple
+    ):  # Omic features are tuples (e.g., for CoAttn)
+        # Transpose the list of tuples: [(o1a,o2a,o3a), (o1b,o2b,o3b)] -> [(o1a,o1b), (o2a,o2b), (o3a,o3b)]
+        num_omic_modalities = len(omic_features_list[0])
+        collated_omic_modalities = []
+        for i in range(num_omic_modalities):
+            modality_tensors = [
+                omic_tuple[i]
+                for omic_tuple in omic_features_list
+                if omic_tuple[i].numel() > 0
+            ]
+            if modality_tensors:
+                collated_omic_modalities.append(torch.stack(modality_tensors, dim=0))
+            else:  # All patients had empty tensor for this modality
+                collated_omic_modalities.append(torch.empty(0))
+        collated_omic_features = tuple(collated_omic_modalities)
+    else:
+        raise TypeError(
+            f"Unsupported omic feature type in batch: {type(omic_features_list[0])}"
+        )
+
+    return (
+        collated_path_features,
+        collated_omic_features,
+        combined_labels,
+        event_times,
+        censorship_statuses,
+    )
+
+
+def get_dataloader(  # Renamed from get_split_loader for generality
+    dataset: Dataset,  # Use base torch Dataset
+    batch_size: int = 1,  # Default MIL batch_size is 1 (one WSI per "batch")
+    shuffle: bool = False,  # For training, typically True
+    use_weighted_sampler: bool = False,  # If True, enables weighted sampling for imbalance
+    num_workers: int = 4,
+    pin_memory: bool = True,
+    collate_fn_type: str = "classification",  # "classification" or "survival"
+    # Removed `testing` flag, as subset sampling is usually for debugging/prototyping
+    # and can be handled by passing a Subset of the dataset if needed.
+    # device: Optional[torch.device] = None, # Not strictly needed for DataLoader creation
+) -> DataLoader:
+    """
+    Creates a PyTorch DataLoader for a given dataset.
+
+    Args:
+        dataset: The PyTorch Dataset instance.
+        batch_size: How many samples per batch to load. For MIL, often 1.
+        shuffle: Set to True to have the data reshuffled at every epoch (usually for training).
+        use_weighted_sampler: If True, uses WeightedRandomSampler for class balancing.
+                              Requires `make_weights_for_balanced_classes` to work with the dataset.
+        num_workers: How many subprocesses to use for data loading.
+        pin_memory: If True, copies Tensors into CUDA pinned memory before returning them.
+        collate_fn_type: Specifies the type of collate function to use.
+                         "classification" for standard (features, label) items.
+                         "survival" for (path_feat, omic_feat, comb_label, time, event) items.
+
+    Returns:
+        torch.DataLoader: The configured DataLoader.
+    """
+    # Determine if CUDA is available and adjust defaults if necessary
+    on_gpu = torch.cuda.is_available()
+    current_num_workers = (
+        num_workers if on_gpu else 0
+    )  # Often set to 0 for CPU for simplicity
+    current_pin_memory = pin_memory if on_gpu else False
+
+    sampler: Optional[Sampler] = None
+    # Shuffle and weighted_sampler are mutually exclusive with explicitly provided sampler.
+    # WeightedRandomSampler implies random sampling.
+    if use_weighted_sampler:
+        if shuffle is False:  # WeightedRandomSampler inherently shuffles.
+            print(
+                "Warning: `use_weighted_sampler=True` implies shuffling. `shuffle=False` will be ignored."
+            )
+        try:
+            weights = make_weights_for_balanced_classes(dataset)
+            # num_samples for WeightedRandomSampler is how many samples to draw in an epoch
+            # Usually len(dataset) to see each sample (on average) once.
+            sampler = WeightedRandomSampler(
+                weights, num_samples=len(dataset), replacement=True
+            )
+            shuffle = False  # Sampler handles shuffling, so DataLoader's shuffle should be False
+        except (AttributeError, ValueError) as e:
+            print(
+                f"Could not create weighted sampler: {e}. Falling back to standard RandomSampler if shuffle=True."
+            )
+            if shuffle:
+                sampler = RandomSampler(dataset)
+            else:
+                sampler = SequentialSampler(
+                    dataset
+                )  # Should not happen if shuffle=True was intended
+    elif shuffle:
+        sampler = RandomSampler(dataset)
+    else:  # No shuffle, no weighted sampling
+        sampler = SequentialSampler(dataset)
+
+    # Select collate_fn based on type
+    if collate_fn_type.lower() == "classification":
+        collate_function = collate_mil_features
+    elif collate_fn_type.lower() == "survival":
+        collate_function = collate_mil_survival
+    else:
+        raise ValueError(
+            f"Unknown collate_fn_type: {collate_fn_type}. "
+            "Choose 'classification' or 'survival'."
+        )
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        collate_fn=collate_function,
+        num_workers=current_num_workers,
+        pin_memory=current_pin_memory,
+        drop_last=False,  # Typically False for MIL unless batch_size > 1 and partial batches are an issue
+    )

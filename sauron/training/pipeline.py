@@ -1,18 +1,14 @@
 # utils/training_utils.py
 
 import os
-import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import (
-    roc_auc_score,  # roc_curve was unused, calc_auc was roc_auc_score
-)
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
 
+from sauron.data.data_utils import get_dataloader
 from sauron.losses.surv_loss import (
     CoxSurvLoss,
     CrossEntropySurvLoss,
@@ -23,11 +19,7 @@ from sauron.losses.surv_loss import (
 from sauron.models.models_factory import initialize_mil_model
 
 # --- Utility Imports ---
-from sauron.utils.callbacks import (
-    EarlyStopping,
-    get_split_loader,  # Assumed to handle batch_size arg now
-    print_network,
-)
+from sauron.utils.callbacks import EarlyStopping
 from sauron.utils.generic_utils import calculate_error
 from sauron.utils.optimizers import get_optim
 
@@ -36,9 +28,11 @@ from .trainer import Trainer
 
 # --- Main Fold Training Function (Orchestrator) ---
 def train_fold(
-    datasets: Tuple[Any, ...],
-    cur: int,
+    train_dataset: Any,
+    val_dataset: Any,
+    cur_fold_num: int,
     args: Any,
+    experiment_base_results_dir: str,
 ) -> Union[
     Tuple[
         Optional[Dict[str, Any]], float, float, float, float
@@ -47,9 +41,9 @@ def train_fold(
     float,  # k-fold (val_metric)
 ]:
     task_type = args.task_type
-    print(f"\n{'='*20} Training Fold: {cur} | Task: {task_type} {'='*20}")
+    print(f"\n{'='*20} Training Fold: {cur_fold_num} | Task: {task_type} {'='*20}")
 
-    results_dir_fold = os.path.join(args.results_dir, str(cur))
+    results_dir_fold = os.path.join(args.results_dir, str(cur_fold_num))
     os.makedirs(results_dir_fold, exist_ok=True)
     writer = (
         SummaryWriter(log_dir=results_dir_fold, flush_secs=15)
@@ -58,15 +52,15 @@ def train_fold(
     )
 
     if args.k_fold:
-        train_split, val_split = datasets[0], datasets[1]
+        train_split, val_split = train_dataset, val_dataset
         test_split = None
-        print(f"K-Fold Training: Fold {cur}")
+        print(f"K-Fold Training: Fold {cur_fold_num}")
     else:
-        train_split, val_split, test_split = datasets[0], datasets[1], datasets[2]
-        splits_file = os.path.join(results_dir_fold, f"splits_{cur}.csv")
+        train_split, val_split, test_split = train_dataset, val_dataset, val_dataset
+        splits_file = os.path.join(results_dir_fold, f"splits_{cur_fold_num}.csv")
         # save_splits might need to handle dataset types or have specific versions
         # save_splits(datasets, ["train", "val", "test"], splits_file)
-        print(f"Standard Training: Fold {cur}")
+        print(f"Standard Training: Fold {cur_fold_num}")
         if test_split:
             print(f"Test set size: {len(test_split)}")
 
@@ -77,17 +71,17 @@ def train_fold(
     # Allow overriding val/test batch_size via args if necessary, but default to 1
     val_test_batch_size = getattr(args, "val_test_batch_size", 1)
 
-    train_loader = get_split_loader(
+    train_loader = get_dataloader(
         train_split,
         training=True,
         weighted=args.weighted_sample,
         batch_size=args.batch_size,
     )
-    val_loader = get_split_loader(
+    val_loader = get_dataloader(
         val_split, training=False, batch_size=val_test_batch_size
     )
     test_loader = (
-        get_split_loader(test_split, training=False, batch_size=val_test_batch_size)
+        get_dataloader(test_split, training=False, batch_size=val_test_batch_size)
         if not args.k_fold and test_split
         else None
     )
@@ -102,8 +96,6 @@ def train_fold(
         model.relocate()  # This might do more than just .to(device)
     else:
         model.to(device)
-
-    print_network(model)
 
     if task_type == "classification":
         loss_fn = nn.CrossEntropyLoss()
@@ -127,7 +119,9 @@ def train_fold(
 
     early_stopping_cb = None
     if args.early_stopping:
-        best_model_path = os.path.join(results_dir_fold, f"s_{cur}_best_model.pt")
+        best_model_path = os.path.join(
+            results_dir_fold, f"s_{cur_fold_num}_best_model.pt"
+        )
 
         es_monitor_metric_name = "metric"  # Default to 'metric' (AUC/C-Index)
         es_mode = "max"

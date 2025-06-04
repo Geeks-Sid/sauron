@@ -205,6 +205,14 @@ def get_args():
                     },
                 ),
                 (
+                    ("--task_type",),
+                    {
+                        "type": str,
+                        "required": True,
+                        "help": "Specify the task type ('classification' or 'survival').",
+                    },
+                ),
+                (
                     ("--exp_code",),
                     {
                         "type": str,
