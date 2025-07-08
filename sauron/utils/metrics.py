@@ -2,7 +2,6 @@ from typing import Tuple
 
 import numpy as np
 from sklearn.metrics import (
-    auc,
     roc_auc_score,
 )
 from sklearn.preprocessing import label_binarize

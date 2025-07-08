@@ -1,7 +1,9 @@
+from typing import List, Optional, Tuple, Union
+
 from torchvision import transforms
 
 # Define normalization constants
-NORMALIZATION_STATS = {
+NORMALIZATION_STATS: dict[str, Tuple[List[float], List[float]]] = {
     "imagenet": ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     "openai_clip": (
         [0.48145466, 0.4578275, 0.40821073],
@@ -11,15 +13,22 @@ NORMALIZATION_STATS = {
 }
 
 
-def get_normalization_stats(norm_type="imagenet"):
+def get_normalization_stats(
+    norm_type: str = "imagenet",
+) -> Tuple[Optional[List[float]], Optional[List[float]]]:
     try:
         return NORMALIZATION_STATS[norm_type]
     except KeyError:
         raise ValueError(f"Invalid normalization type: {norm_type}")
 
 
-def create_eval_transforms(mean, std, img_size=-1, center_crop=False):
-    transform_list = []
+def create_eval_transforms(
+    mean: Optional[List[float]],
+    std: Optional[List[float]],
+    img_size: int = -1,
+    center_crop: bool = False,
+) -> transforms.Compose:
+    transform_list: List[transforms.Transform] = []
 
     if img_size > 0:
         transform_list.append(transforms.Resize(img_size))

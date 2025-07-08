@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import geopandas as gpd
@@ -15,10 +15,14 @@ def apply_mask_to_image(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
 
 def filter_and_group_contours(
-    contours, hierarchy, filter_params, scaling_factor, pixel_size
-):
-    foreground_indices = []
-    hole_indices_per_contour = []
+    contours: List[np.ndarray],
+    hierarchy: np.ndarray,
+    filter_params: Dict[str, float],
+    scaling_factor: float,
+    pixel_size: float,
+) -> Tuple[List[np.ndarray], List[List[np.ndarray]]]:
+    foreground_indices: List[int] = []
+    hole_indices_per_contour: List[List[int]] = []
     top_level_indices = np.where(hierarchy[:, 1] == -1)[0] if hierarchy.size > 0 else []
 
     for idx in top_level_indices:
@@ -72,7 +76,7 @@ def mask_to_geodataframe(
         hierarchy.squeeze(axis=0)[:, 2:] if hierarchy is not None else np.array([])
     )
 
-    filter_params = {
+    filter_params: Dict[str, float] = {
         "min_area": min_contour_area * (pixel_size**2),
         "min_hole_area": 4000 * (pixel_size**2),
     }
@@ -100,7 +104,7 @@ def mask_to_geodataframe(
         else set(range(len(scaled_foreground_contours))) - set(exclude_ids or [])
     )
 
-    polygons = []
+    polygons: List[Polygon] = []
     for idx in contour_indices:
         holes = (
             [hole.squeeze(1) for hole in scaled_hole_contours[idx]]

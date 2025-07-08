@@ -282,6 +282,7 @@ ENCODER_REGISTRY = {
     "hoptimus0": HOptimus0Encoder,
     "conch_v1": ConchEncoder,
     "uni_v1": UniEncoder,
+    "uni_v2": UniEncoder,
     "ctranspath": CTransPathEncoder,
     "phikon": PhikonEncoder,
     "plip": PlipEncoder,

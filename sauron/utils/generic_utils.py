@@ -11,13 +11,14 @@ from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
 
 
-def save_pkl(filename, save_object):
+def save_pkl(filename: str, save_object: object) -> None:
     with open(filename, "wb") as f:
         pickle.dump(save_object, f)
 
 
-def load_pkl(filename):
-    return pickle.load(open(filename, "rb"))
+def load_pkl(filename: str) -> object:
+    with open(filename, "rb") as file:
+        return pickle.load(file)
 
 
 def seed_everything(seed: int = 42) -> None:

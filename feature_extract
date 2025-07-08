@@ -50,10 +50,17 @@ if __name__ == "__main__":
         default=32,
         help="Batch size for processing slides. Defaults to 32.",
     )
+    parser.add_argument(
+        "--encoder",
+        type=str,
+        default="conch_ViT-B-16",
+        help="Encoder to use for feature extraction. Defaults to conch_ViT-B-16.",
+    )
+
 
     args = parser.parse_args()
 
     logger.info(colored("Initiating processing of slides...", "green"))
 
-    embedder = SlideEmbedder(args.slide_dir, args.output_dir, args.mag, args.patch_size)
+    embedder = SlideEmbedder(args.slide_dir, args.output_dir, args.mag, args.patch_size, args.encoder)
     embedder.process_slides()
