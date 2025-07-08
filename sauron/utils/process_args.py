@@ -385,32 +385,3 @@ def get_args():
 
     args = parser.parse_args()
     return args
-
-
-if __name__ == "__main__":
-    args = get_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device is: {device}")
-
-    seed_everything(args.seed)
-
-    # Create results directory
-    os.makedirs(args.results_dir, exist_ok=True)
-
-    # If split_dir is None, infer it
-    if args.split_dir is None:
-        args.split_dir = os.path.join(
-            "splits", f"{args.task}_{int(args.label_frac * 100)}"
-        )
-
-    assert os.path.isdir(
-        args.split_dir
-    ), f"Split directory does not exist: {args.split_dir}"
-
-    # Write experiment configuration to a file
-    with open(os.path.join(args.results_dir, "experiment.txt"), "w") as f:
-        for key, val in vars(args).items():
-            f.write(f"{key}: {val}\n")
-
-    main(args)
-    print("Finished!")

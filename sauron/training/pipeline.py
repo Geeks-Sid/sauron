@@ -1,229 +1,368 @@
-# utils/training_utils.py
-
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
+import pytorch_lightning as pl
 import torch
-import torch.nn as nn
-from torch.utils.tensorboard import SummaryWriter
+from pytorch_lightning.callbacks import (
+    Callback,
+    EarlyStopping,
+    ModelCheckpoint,
+    TQDMProgressBar,
+)
+from pytorch_lightning.loggers import Logger, TensorBoardLogger
+from torch.utils.data import DataLoader
 
 from sauron.data.data_utils import get_dataloader
-from sauron.losses.surv_loss import (
-    CoxSurvLoss,
-    CrossEntropySurvLoss,
-    NLLSurvLoss,
-)
+from sauron.mil_models.models_factory import initialize_mil_model
+from sauron.training.lightning_module import SauronLightningModule
 
-# from sauron.utils.survival_utils import make_weights_for_balanced_classes_split # Not used in snippet
-from sauron.models.models_factory import initialize_mil_model
-
-# --- Utility Imports ---
-from sauron.utils.callbacks import EarlyStopping
-from sauron.utils.generic_utils import calculate_error
-from sauron.utils.optimizers import get_optim
-
-from .trainer import Trainer
+# --- Constants for default values (if not in args) ---
+DEFAULT_NUM_WORKERS = 4
+DEFAULT_VAL_TEST_BATCH_SIZE = 1
+DEFAULT_ES_PATIENCE = 20
+DEFAULT_GRAD_ACCUM_STEPS = 1
+DEFAULT_LOG_EVERY_N_STEPS = 50
+DEFAULT_TQDM_REFRESH_DIVISOR = 100
 
 
-# --- Main Fold Training Function (Orchestrator) ---
-def train_fold(
+def _setup_environment_and_logger(
+    base_results_dir: str, current_fold_num: int, log_data_flag: bool
+) -> Tuple[str, Optional[Logger]]:
+    """Sets up the results directory for the current fold and initializes the TensorBoardLogger."""
+    fold_results_dir = os.path.join(base_results_dir, str(current_fold_num))
+    os.makedirs(fold_results_dir, exist_ok=True)
+
+    logger = None
+    if log_data_flag:
+        logger = TensorBoardLogger(
+            save_dir=base_results_dir,
+            name="",  # No subdirectory for model name, version handles fold
+            version=str(current_fold_num),
+            default_hp_metric=False,  # Recommended by PyTorch Lightning
+        )
+    print(f"Results directory for fold {current_fold_num}: {fold_results_dir}")
+    return fold_results_dir, logger
+
+
+def _initialize_dataloaders(
     train_dataset: Any,
     val_dataset: Any,
-    cur_fold_num: int,
+    test_dataset: Optional[Any],
     args: Any,
-    experiment_base_results_dir: str,
-) -> Union[
-    Tuple[
-        Optional[Dict[str, Any]], float, float, float, float
-    ],  # Classification (non-kfold)
-    Tuple[Optional[Dict[str, Any]], float, float],  # Survival (non-kfold)
-    float,  # k-fold (val_metric)
-]:
-    task_type = args.task_type
-    print(f"\n{'='*20} Training Fold: {cur_fold_num} | Task: {task_type} {'='*20}")
-
-    results_dir_fold = os.path.join(args.results_dir, str(cur_fold_num))
-    os.makedirs(results_dir_fold, exist_ok=True)
-    writer = (
-        SummaryWriter(log_dir=results_dir_fold, flush_secs=15)
-        if args.log_data
-        else None
+) -> Tuple[DataLoader, DataLoader, Optional[DataLoader]]:
+    """Initializes train, validation, and optional test DataLoaders."""
+    val_test_batch_size = getattr(
+        args, "val_test_batch_size", DEFAULT_VAL_TEST_BATCH_SIZE
     )
-
-    if args.k_fold:
-        train_split, val_split = train_dataset, val_dataset
-        test_split = None
-        print(f"K-Fold Training: Fold {cur_fold_num}")
-    else:
-        train_split, val_split, test_split = train_dataset, val_dataset, val_dataset
-        splits_file = os.path.join(results_dir_fold, f"splits_{cur_fold_num}.csv")
-        # save_splits might need to handle dataset types or have specific versions
-        # save_splits(datasets, ["train", "val", "test"], splits_file)
-        print(f"Standard Training: Fold {cur_fold_num}")
-        if test_split:
-            print(f"Test set size: {len(test_split)}")
-
-    print(f"Train set size: {len(train_split)}")
-    print(f"Val set size  : {len(val_split)}")
-
-    # Use args.batch_size for training, and typically 1 for MIL validation/testing
-    # Allow overriding val/test batch_size via args if necessary, but default to 1
-    val_test_batch_size = getattr(args, "val_test_batch_size", 1)
+    num_workers = getattr(args, "num_workers", DEFAULT_NUM_WORKERS)
 
     train_loader = get_dataloader(
-        train_split,
+        train_dataset,
         training=True,
         weighted=args.weighted_sample,
         batch_size=args.batch_size,
+        num_workers=num_workers,
     )
     val_loader = get_dataloader(
-        val_split, training=False, batch_size=val_test_batch_size
+        val_dataset,
+        training=False,
+        batch_size=val_test_batch_size,
+        num_workers=num_workers,
     )
     test_loader = (
-        get_dataloader(test_split, training=False, batch_size=val_test_batch_size)
-        if not args.k_fold and test_split
+        get_dataloader(
+            test_dataset,
+            training=False,
+            batch_size=val_test_batch_size,
+            num_workers=num_workers,
+        )
+        if test_dataset
         else None
     )
 
-    model = initialize_mil_model(args)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Validation dataset size: {len(val_dataset)}")
+    if test_dataset:
+        print(f"Test dataset size: {len(test_dataset)}")
+    return train_loader, val_loader, test_loader
 
-    if hasattr(model, "relocate") and callable(
-        model.relocate
-    ):  # Custom relocate method
-        print("Calling model.relocate()...")
-        model.relocate()  # This might do more than just .to(device)
-    else:
-        model.to(device)
 
-    if task_type == "classification":
-        loss_fn = nn.CrossEntropyLoss()
-    elif task_type == "survival":
-        alpha_surv = getattr(args, "alpha_surv", 0.0)  # Default alpha if not in args
-        if args.bag_loss == "ce_surv":
-            loss_fn = CrossEntropySurvLoss(alpha=alpha_surv)
-        elif args.bag_loss == "nll_surv":
-            loss_fn = NLLSurvLoss(alpha=alpha_surv)
-        elif args.bag_loss == "cox_surv":
-            loss_fn = CoxSurvLoss()  # Cox usually doesn't use alpha
-        else:
-            raise NotImplementedError(f"Survival loss {args.bag_loss} not implemented.")
-    else:
-        raise ValueError(f"Invalid task_type: {task_type}")
+def _initialize_lightning_module(args: Any) -> SauronLightningModule:
+    """Initializes the PyTorch model and wraps it with SauronLightningModule."""
+    pytorch_model = initialize_mil_model(args)
+    lightning_module = SauronLightningModule(model=pytorch_model, args=args)
+    return lightning_module
 
-    optimizer = get_optim(model, args)
-    trainer = Trainer(
-        model, optimizer, loss_fn, device, task_type, args.n_classes, args, writer
-    )
 
-    early_stopping_cb = None
+def _configure_callbacks(
+    args: Any, fold_results_dir: str, train_loader_len: int
+) -> Tuple[List[Callback], ModelCheckpoint]:
+    """Configures and returns PyTorch Lightning callbacks."""
+    callbacks_list: List[Callback] = []
+
+    # Determine monitor metric and mode for EarlyStopping and ModelCheckpoint
+    monitor_metric_name = "val_loss"
+    monitor_mode = "min"
+    filename_template = "best_model-{epoch}-{val_loss:.4f}"
+
+    if args.task_type == "classification":
+        if (
+            getattr(args, "monitor_metric", "loss").lower() == "metric"
+        ):  # 'metric' typically AUC for classification
+            monitor_metric_name = "val/auc"
+            monitor_mode = "max"
+            filename_template = "best_model-{epoch}-{val/auc:.4f}"
+    elif args.task_type == "survival":  # For survival, 'metric' is C-Index
+        if getattr(args, "monitor_metric", "loss").lower() == "metric":
+            monitor_metric_name = "val/c_index"
+            monitor_mode = "max"
+            filename_template = "best_model-{epoch}-{val/c_index:.4f}"
+        # If monitor_metric is 'loss' for survival, default val_loss and min mode are already set
+
     if args.early_stopping:
-        best_model_path = os.path.join(
-            results_dir_fold, f"s_{cur_fold_num}_best_model.pt"
-        )
-
-        es_monitor_metric_name = "metric"  # Default to 'metric' (AUC/C-Index)
-        es_mode = "max"
-        if task_type == "classification":
-            # Allow overriding to monitor loss for classification
-            if getattr(args, "early_stop_target", "metric").lower() == "loss":
-                es_monitor_metric_name = "loss"
-                es_mode = "min"
-        # For survival, it's always 'metric' (C-Index) and 'max'
-
-        early_stopping_cb = EarlyStopping(
-            patience=getattr(args, "es_patience", 20),
-            stop_epoch=getattr(args, "es_stop_epoch", 50),
+        early_stopping_callback = EarlyStopping(
+            monitor=monitor_metric_name,
+            patience=getattr(args, "es_patience", DEFAULT_ES_PATIENCE),
             verbose=True,
-            mode=es_mode,
-            stop_metric=es_monitor_metric_name,  # 'loss' or 'metric'
-            ckpt_path=best_model_path,
+            mode=monitor_mode,
+        )
+        callbacks_list.append(early_stopping_callback)
+        print(
+            f"Early stopping enabled: monitor='{monitor_metric_name}', mode='{monitor_mode}'"
         )
 
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=os.path.join(fold_results_dir, "checkpoints"),
+        filename=filename_template,
+        monitor=monitor_metric_name,
+        mode=monitor_mode,
+        save_top_k=1,
+        save_last=True,
+        verbose=True,
+    )
+    callbacks_list.append(checkpoint_callback)
+    print(
+        f"Model checkpointing enabled: monitor='{monitor_metric_name}', mode='{monitor_mode}'"
+    )
+
+    # TQDM Progress Bar
+    refresh_rate = max(
+        1,
+        train_loader_len // DEFAULT_TQDM_REFRESH_DIVISOR if train_loader_len > 0 else 1,
+    )
+    callbacks_list.append(TQDMProgressBar(refresh_rate=refresh_rate))
+
+    return callbacks_list, checkpoint_callback
+
+
+def _configure_trainer(
+    args: Any,
+    logger: Optional[Logger],
+    callbacks: List[Callback],
+    train_loader_len: int,
+) -> pl.Trainer:
+    """Configures and returns the PyTorch Lightning Trainer."""
+    grad_accum_steps = getattr(args, "gc", DEFAULT_GRAD_ACCUM_STEPS)
+
+    trainer_params = {
+        "logger": logger,
+        "callbacks": callbacks,
+        "max_epochs": args.max_epochs,
+        "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
+        "devices": "auto"
+        if torch.cuda.is_available()
+        else 1,  # Simpler device selection
+        "accumulate_grad_batches": grad_accum_steps,
+        "deterministic": getattr(args, "deterministic", False),
+        "log_every_n_steps": min(
+            DEFAULT_LOG_EVERY_N_STEPS,
+            train_loader_len // grad_accum_steps
+            if train_loader_len > 0 and grad_accum_steps > 0
+            else DEFAULT_LOG_EVERY_N_STEPS,
+        ),
+        # "precision": "16-mixed" if getattr(args, "amp", False) else 32, # Updated precision flag
+    }
+    if getattr(args, "amp", False):  # Automatic Mixed Precision
+        trainer_params["precision"] = "16-mixed"
+
+    if hasattr(args, "gradient_clip_val") and args.gradient_clip_val is not None:
+        trainer_params["gradient_clip_val"] = args.gradient_clip_val
+        trainer_params["gradient_clip_algorithm"] = getattr(
+            args, "gradient_clip_algorithm", "norm"
+        )
+
+    return pl.Trainer(**trainer_params)
+
+
+def _run_final_evaluation(
+    trainer: pl.Trainer,
+    lightning_module: SauronLightningModule,
+    test_loader: Optional[DataLoader],
+    checkpoint_callback: ModelCheckpoint,
+    fold_results_dir: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Runs final evaluation on the test set using the best model checkpoint."""
+    test_metrics = None
+    patient_results_dict = None
+
+    best_model_path = checkpoint_callback.best_model_path
+
+    # Fallback to last checkpoint if best_model_path is empty or doesn't exist
+    if not best_model_path or not os.path.exists(best_model_path):
+        if best_model_path:  # It was set but file is missing
+            print(f"Warning: Best model path '{best_model_path}' does not exist.")
+
+        last_ckpt_path = os.path.join(fold_results_dir, "checkpoints", "last.ckpt")
+        if os.path.exists(last_ckpt_path):
+            print(f"Attempting to use last checkpoint: '{last_ckpt_path}'")
+            best_model_path = last_ckpt_path
+        else:
+            print(
+                "Warning: No best or last checkpoint found. Skipping test evaluation."
+            )
+            return test_metrics, patient_results_dict
+
+    if test_loader:
+        print(f"\n--- Final Test Evaluation (using model from: {best_model_path}) ---")
+        trainer.test(
+            model=lightning_module, dataloaders=test_loader, ckpt_path=best_model_path
+        )
+
+        current_test_metrics = {}
+        for key, value in trainer.callback_metrics.items():
+            if key.startswith("test/"):
+                metric_name = key.replace("test/", "")
+                current_test_metrics[metric_name] = (
+                    value.item() if isinstance(value, torch.Tensor) else value
+                )
+        test_metrics = current_test_metrics
+
+        if (
+            hasattr(lightning_module, "test_patient_results_aggregated")
+            and lightning_module.test_patient_results_aggregated
+        ):
+            patient_results_dict = lightning_module.test_patient_results_aggregated
+            # Optionally save patient results to a file here if desired
+            # import json
+            # patient_results_path = os.path.join(fold_results_dir, "test_patient_results.json")
+            # with open(patient_results_path, 'w') as f:
+            #     json.dump(patient_results_dict, f, indent=4)
+            # print(f"Saved patient-level test results to {patient_results_path}")
+    else:
+        print("No test loader provided. Skipping final test evaluation.")
+
+    return test_metrics, patient_results_dict
+
+
+def _compile_results(
+    current_fold_num: int,
+    args: Any,
+    checkpoint_callback: ModelCheckpoint,
+    trainer: pl.Trainer,
+    test_metrics: Optional[Dict[str, Any]],
+    patient_results_dict: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Compiles all training and evaluation results into a dictionary."""
+    results = {"fold": current_fold_num}
+
+    if test_metrics:
+        for metric_name, value in test_metrics.items():
+            results[f"test_{metric_name}"] = value  # e.g. test_auc, test_loss
+
+    if patient_results_dict:
+        results["test_patient_results_dict"] = patient_results_dict
+
+    # Add best validation metric from the checkpoint callback
+    if checkpoint_callback.best_model_score is not None:
+        # Sanitize monitor name for use as a key
+        monitor_key = checkpoint_callback.monitor.replace("/", "_").replace("-", "_")
+        results[f"best_val_{monitor_key}"] = (
+            checkpoint_callback.best_model_score.item()
+            if isinstance(checkpoint_callback.best_model_score, torch.Tensor)
+            else checkpoint_callback.best_model_score
+        )
+
+    # For k-fold summary, the primary monitored validation metric is often used
+    if args.k_fold:
+        if checkpoint_callback.best_model_score is not None:
+            results["kfold_val_metric"] = (
+                checkpoint_callback.best_model_score.item()
+                if isinstance(checkpoint_callback.best_model_score, torch.Tensor)
+                else checkpoint_callback.best_model_score
+            )
+        else:
+            # Fallback if best_model_score is somehow None (e.g., training interrupted before first validation)
+            results["kfold_val_metric"] = trainer.callback_metrics.get(
+                checkpoint_callback.monitor, float("nan")
+            )
+
+    return results
+
+
+def train_fold(
+    train_dataset: Any,
+    val_dataset: Any,
+    test_dataset: Optional[Any],
+    current_fold_num: int,
+    args: Any,
+) -> Dict[str, Any]:
+    """
+    Trains a model for a single fold using PyTorch Lightning.
+
+    Args:
+        train_dataset: Training dataset.
+        val_dataset: Validation dataset.
+        test_dataset: Optional test dataset.
+        current_fold_num: The current fold number.
+        args: Namespace object containing command-line arguments and configurations.
+
+    Returns:
+        A dictionary containing training and evaluation results for the fold.
+    """
+    print(
+        f"\n{'='*20} Training Fold (PyTorch Lightning): {current_fold_num} | Task: {args.task_type} {'='*20}"
+    )
+
+    # 1. Setup Environment and Logger
+    fold_results_dir, logger = _setup_environment_and_logger(
+        args.results_dir, current_fold_num, args.log_data
+    )
+
+    # 2. Initialize DataLoaders
+    train_loader, val_loader, test_loader = _initialize_dataloaders(
+        train_dataset, val_dataset, test_dataset, args
+    )
+    train_loader_len = len(train_loader) if train_loader else 0
+
+    # 3. Initialize LightningModule
+    lightning_module = _initialize_lightning_module(args)
+
+    # 4. Configure Callbacks
+    callbacks, checkpoint_cb = _configure_callbacks(
+        args, fold_results_dir, train_loader_len
+    )
+
+    # 5. Configure and Initialize PyTorch Lightning Trainer
+    trainer = _configure_trainer(args, logger, callbacks, train_loader_len)
+
+    # 6. Start Training
+    print("Starting training...")
     trainer.fit(
-        train_loader,
-        val_loader,
-        early_stopping_cb=early_stopping_cb,
-        max_epochs=args.max_epochs,
+        model=lightning_module,
+        train_dataloaders=train_loader,
+        val_dataloaders=val_loader,
+    )
+    print("Training finished.")
+
+    # 7. Final Evaluation on Test Set
+    test_metrics, patient_results = _run_final_evaluation(
+        trainer, lightning_module, test_loader, checkpoint_cb, fold_results_dir
     )
 
-    print("\n--- Final Evaluation (using best/last model) ---")
-    # Evaluate on validation set with the final (best) model
-    val_final_metric, val_final_loss, _ = trainer._evaluate(
-        val_loader,
-        epoch_log_id=trainer.current_epoch,  # Log against last epoch or a summary step
-        eval_survival_loss_alpha=0.0,
-        results_prefix="Val_Final",
-        collect_patient_results=False,
+    # 8. Compile and Return Results
+    final_results = _compile_results(
+        current_fold_num, args, checkpoint_cb, trainer, test_metrics, patient_results
     )
-    if writer:
-        writer.add_scalar(f"final_eval/val_loss", val_final_loss, trainer.current_epoch)
-        writer.add_scalar(
-            f"final_eval/val_{'auc' if task_type=='classification' else 'c_index'}",
-            val_final_metric,
-            trainer.current_epoch,
-        )
 
-    if not args.k_fold and test_loader:
-        test_results_dict, test_final_metric, test_final_loss = trainer._evaluate(
-            test_loader,
-            epoch_log_id=trainer.current_epoch,
-            eval_survival_loss_alpha=0.0,
-            results_prefix="Test_Final",
-            collect_patient_results=True,  # Collect for test
-        )
-        if writer:
-            writer.add_scalar(
-                f"final_eval/test_loss", test_final_loss, trainer.current_epoch
-            )
-            writer.add_scalar(
-                f"final_eval/test_{'auc' if task_type=='classification' else 'c_index'}",
-                test_final_metric,
-                trainer.current_epoch,
-            )
-
-        if task_type == "classification":
-            test_acc = 0.0
-            # Calculate test accuracy from results_dict if available
-            if test_results_dict:
-                try:
-                    preds = torch.tensor(
-                        [res["pred"] for res in test_results_dict.values()]
-                    )
-                    labels = torch.tensor(
-                        [res["label"] for res in test_results_dict.values()]
-                    )
-                    if len(preds) > 0:
-                        test_acc = 1.0 - calculate_error(preds, labels)
-                        print(f"  Final Test Accuracy: {test_acc:.4f}")
-                        if writer:
-                            writer.add_scalar(
-                                "final_eval/test_acc", test_acc, trainer.current_epoch
-                            )
-                except KeyError:
-                    print(
-                        "Warning: 'pred' or 'label' key missing in test_results_dict for accuracy calculation."
-                    )
-
-            # Original return: results_dict, test_metric, val_metric, test_acc, val_acc (val_error actually)
-            # Val acc/error is not directly returned by _evaluate, would need dedicated calculation.
-            # Let's return what we have: test_results, test_metric (AUC), val_metric (AUC), test_acc, placeholder for val_acc
-            val_acc_placeholder = 0.0  # Needs to be calculated if required.
-            if writer:
-                writer.close()
-            return (
-                test_results_dict,
-                test_final_metric,
-                val_final_metric,
-                test_acc,
-                val_acc_placeholder,
-            )
-        else:  # Survival
-            if writer:
-                writer.close()
-            return test_results_dict, test_final_metric, val_final_metric
-    else:  # k-fold (or no test set)
-        if writer:
-            writer.close()
-        return val_final_metric  # Return val_metric for k-fold summary
+    print(f"Finished training fold {current_fold_num}. Results: {final_results}")
+    return final_results

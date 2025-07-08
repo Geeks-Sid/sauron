@@ -41,8 +41,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--patch_size",
         type=int,
-        default=256,
-        help="Size of the patches to be extracted. Defaults to 256.",
+        default=224,
+        help="Size of the patches to be extracted. Defaults to 224.",
     )
     parser.add_argument(
         "--batch_size",
