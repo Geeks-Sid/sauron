@@ -3,9 +3,14 @@ import logging
 import os
 import sys
 from termcolor import colored
+from queue import Queue
+from threading import Thread
 
-import openslide
-from sauron.preprocess.slide_embedder import SlideEmbedder
+# Import the new Processor class
+from sauron.feature_extraction.processor import Processor
+# Import concurrency utilities for parallel caching pipeline
+from sauron.feature_extraction.concurrency import batch_producer, batch_consumer
+
 
 # Configure logger
 logging.basicConfig(
@@ -14,53 +19,320 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def build_parser():
+    """
+    Parse command-line arguments for the Sauron feature extraction script.
+    Adapted from trident's `run_batch_of_slides.py` parser.
+    """
+    parser = argparse.ArgumentParser(description='Run Sauron Whole Slide Image Processing')
+
+    # Generic arguments 
+    parser.add_argument('--gpu', type=int, default=0, help='GPU index to use for processing tasks.')
+    parser.add_argument('--task', type=str, default='seg', 
+                        choices=['seg', 'coords', 'feat', 'all', 'cache'], 
+                        help='Task to run: seg (segmentation), coords (save tissue coordinates), feat (extract features), all (run all steps), cache (populate WSI cache only).')
+    parser.add_argument('--job_dir', type=str, required=True, help='Directory to store outputs.')
+    parser.add_argument('--skip_errors', action='store_true', default=False, 
+                        help='Skip errored slides and continue processing.')
+    parser.add_argument('--max_workers', type=int, default=None, 
+                        help='Maximum number of workers for data loading (e.g., in DataLoader). If None, inferred based on CPU cores.')
+    parser.add_argument('--batch_size', type=int, default=64, 
+                        help="Batch size used for segmentation and feature extraction. Will be overridden by "
+                        "`seg_batch_size` and `feat_batch_size` if specified. Defaults to 64.")
+
+    # Caching argument for fast WSI processing
+    parser.add_argument(
+        '--wsi_cache', type=str, default=None,
+        help='Path to a local cache (e.g., SSD) used to speed up access to WSIs stored on slower drives (e.g., HDD). '
+             'If provided, WSIs are copied here before processing.'
+    )
+    parser.add_argument(
+        '--cache_batch_size', type=int, default=32,
+        help='Maximum number of slides to cache locally at once when using --wsi_cache. Helps control disk usage.'
+    )
+    parser.add_argument('--clear_cache', action='store_true', default=False, 
+                        help='If using --wsi_cache, delete cached WSIs after processing each batch.')
+
+    # Slide-related arguments
+    parser.add_argument('--wsi_dir', type=str, required=True, 
+                        help='Directory containing WSI files (can be nested if --search_nested is used).')
+    parser.add_argument('--wsi_ext', type=str, nargs='+', default=None, 
+                        help='List of allowed file extensions for WSI files (e.g., .svs .tif). If None, common extensions are used.')
+    parser.add_argument('--custom_mpp_keys', type=str, nargs='+', default=None,
+                    help='Custom keys used to store the resolution as MPP (micron per pixel) in WSI metadata.')
+    parser.add_argument('--custom_list_of_wsis', type=str, default=None,
+                    help='Path to a CSV file specifying a custom list of WSIs to process. Must contain a "wsi" column and optionally an "mpp" column.')
+    parser.add_argument('--reader_type', type=str, choices=['openslide', 'image', 'cucim'], default=None,
+                    help='Force the use of a specific WSI image reader. Options are ["openslide", "image", "cucim"]. Defaults to None (auto-determine which reader to use).')
+    parser.add_argument("--search_nested", action="store_true",
+                        help=("If set, recursively search for whole-slide images (WSIs) within all subdirectories of "
+                              "`wsi_dir`. Uses `os.walk` to include slides from nested folders. "
+                              "Defaults to False (only top-level slides are included)."))
+
+    # Segmentation arguments 
+    parser.add_argument('--segmenter', type=str, default='hest', 
+                        choices=['hest', 'grandqc'], 
+                        help='Type of tissue vs background segmenter model to use. Options are HEST or GrandQC.')
+    parser.add_argument('--seg_conf_thresh', type=float, default=0.5, 
+                    help='Confidence threshold to apply to binarize segmentation predictions. Lower this threshold to retain more tissue. Defaults to 0.5. Try 0.4 as 2nd option.')
+    parser.add_argument('--remove_holes', action='store_true', default=False, 
+                        help='If set, removes holes detected within tissue regions from the segmentation mask.')
+    parser.add_argument('--remove_artifacts', action='store_true', default=False, 
+                        help='If set, runs an additional GrandQC-based model to remove artifacts (including penmarks, blurs, stains, etc.) from the tissue segmentation.')
+    parser.add_argument('--remove_penmarks', action='store_true', default=False, 
+                        help='If set (and --remove_artifacts is not set), runs a specialized GrandQC-based model to remove only penmarks from the tissue segmentation.')
+    parser.add_argument('--seg_batch_size', type=int, default=None, 
+                        help='Batch size for segmentation. Defaults to None (use `batch_size` argument instead).')
+    
+    # Patching arguments
+    parser.add_argument('--mag', type=int, choices=[5, 10, 20, 40, 80], default=20, 
+                        help='Magnification level (e.g., 20 for 20x) at which to extract patches and features.')
+    parser.add_argument('--patch_size', type=int, default=512, 
+                        help='Side length of square patches in pixels at the specified magnification.')
+    parser.add_argument('--overlap', type=int, default=0, 
+                        help='Absolute overlap between adjacent patches in pixels (at the specified magnification). Defaults to 0.')
+    parser.add_argument('--min_tissue_proportion', type=float, default=0., 
+                        help='Minimum proportion of the patch area that must contain tissue to be kept. Between 0. and 1.0. Defaults to 0. (any tissue).')
+    parser.add_argument('--coords_dir_name', type=str, default=None, # Changed from coords_dir
+                        help='Name of the directory to save/restore tissue coordinates (relative to job_dir). If None, auto-generated.')
+    
+    # Feature extraction arguments 
+    parser.add_argument('--patch_encoder', type=str, default='conch_v15', 
+                        choices=[ # List all supported patch encoders from sauron.feature_extraction.models.patch_encoders.factory
+                                 'conch_v1', 'uni_v1', 'uni_v2', 'ctranspath', 'phikon', 
+                                 'resnet50', 'gigapath', 'virchow', 'virchow2', 
+                                 'hoptimus0', 'hoptimus1', 'phikon_v2', 'conch_v15', 'musk', 'hibou_l',
+                                 'kaiko-vits8', 'kaiko-vits16', 'kaiko-vitb8', 'kaiko-vitb16',
+                                 'kaiko-vitl14', 'lunit-vits8', 'midnight12k'],
+                        help='Patch encoder model to use for feature extraction.')
+    parser.add_argument(
+        '--patch_encoder_ckpt_path', type=str, default=None,
+        help=(
+            "Optional local path to a patch encoder checkpoint (.pt, .pth, .bin, or .safetensors). "
+            "This overrides the default download mechanism and model registry. "
+            "Useful for offline environments or custom checkpoints."
+        )
+    )
+    parser.add_argument('--slide_encoder', type=str, default=None, 
+                        choices=[ # List all supported slide encoders from sauron.feature_extraction.models.slide_encoders.factory
+                                 'threads', 'titan', 'prism', 'gigapath', 'chief', 'madeleine',
+                                 # Mean-pooling variants (derived from patch encoders)
+                                 'mean-virchow', 'mean-virchow2', 'mean-conch_v1', 'mean-conch_v15', 'mean-ctranspath',
+                                 'mean-gigapath', 'mean-resnet50', 'mean-hoptimus0', 'mean-phikon', 'mean-phikon_v2',
+                                 'mean-musk', 'mean-uni_v1', 'mean-uni_v2', 'mean-hibou_l', 'mean-lunit-vits8', 'mean-midnight12k',
+                                 'mean-kaiko-vits8', 'mean-kaiko-vits16', 'mean-kaiko-vitb8', 'kaiko-vitb16', 'kaiko-vitl14'
+                                 ], 
+                        help='Slide encoder model to use for feature extraction. If specified, will automatically extract required patch features.')
+    parser.add_argument('--feat_batch_size', type=int, default=None, 
+                        help='Batch size for feature extraction. Defaults to None (use `batch_size` argument instead).')
+    
+    return parser
+
+
+def parse_arguments():
+    return build_parser().parse_args()
+
+
+def initialize_processor(args, wsi_dir_for_processor: str):
+    """
+    Initialize the Sauron Processor with arguments.
+    `wsi_dir_for_processor` is typically `args.wsi_dir` or a batch cache directory.
+    """
+    return Processor(
+        job_dir=args.job_dir,
+        wsi_source=wsi_dir_for_processor, # This is the directory the processor will *read from*
+        wsi_ext=args.wsi_ext,
+        wsi_cache=args.wsi_cache,
+        clear_cache=args.clear_cache,
+        skip_errors=args.skip_errors,
+        custom_mpp_keys=args.custom_mpp_keys,
+        custom_list_of_wsis=args.custom_list_of_wsis,
+        max_workers=args.max_workers,
+        reader_type=args.reader_type,
+        search_nested=args.search_nested,
+    )
+
+
+def run_task(processor: Processor, args):
+    """
+    Execute the specified task using the Sauron Processor.
+    """
+
+    device_str = f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu'
+
+    if args.task == 'seg':
+        # Instantiate segmentation model and artifact remover if requested by user
+        segmentation_model = segmentation_model_factory(
+            args.segmenter,
+            confidence_thresh=args.seg_conf_thresh,
+        )
+        artifact_remover_model = None
+        if args.remove_artifacts:
+            artifact_remover_model = segmentation_model_factory(
+                'grandqc_artifact', # This model handles general artifacts
+                # remove_penmarks_only=False (default behavior)
+            )
+        elif args.remove_penmarks: # Only if remove_artifacts is NOT set
+            artifact_remover_model = segmentation_model_factory(
+                'grandqc_artifact', 
+                remove_penmarks_only=True # Specialized for penmarks
+            )
+
+        # run segmentation 
+        processor.run_segmentation_job(
+            segmentation_model=segmentation_model,
+            seg_mag=segmentation_model.target_mag, # Use model's recommended target_mag
+            holes_are_tissue= not args.remove_holes,
+            artifact_remover_model=artifact_remover_model,
+            batch_size=args.seg_batch_size if args.seg_batch_size is not None else args.batch_size,
+            device=device_str,
+        )
+    elif args.task == 'coords':
+        # Derive coords_dir_name if not provided
+        coords_dir_name = args.coords_dir_name or f'{args.mag}x_{args.patch_size}px_{args.overlap}px_overlap'
+        processor.run_patching_job(
+            target_magnification=args.mag,
+            patch_size=args.patch_size,
+            overlap=args.overlap,
+            patch_dir_name=coords_dir_name, # Pass as `patch_dir_name`
+            min_tissue_proportion=args.min_tissue_proportion
+        )
+    elif args.task == 'feat':
+        # Derive coords_dir_name if not provided, for feature extraction
+        coords_dir_for_feat = args.coords_dir_name or f'{args.mag}x_{args.patch_size}px_{args.overlap}px_overlap'
+
+        if args.slide_encoder is None: 
+            # Patch Feature Extraction
+            patch_encoder = patch_encoder_factory(args.patch_encoder, weights_path=args.patch_encoder_ckpt_path)
+            processor.run_patch_feature_extraction_job(
+                coords_h5_dir=os.path.join(args.job_dir, coords_dir_for_feat, 'patches'), # Path to the 'patches' subfolder
+                patch_encoder=patch_encoder,
+                device=device_str,
+                saveas='h5', # Hardcoded to h5 for now, as it's common for MIL
+                batch_limit=args.feat_batch_size if args.feat_batch_size is not None else args.batch_size,
+            )
+        else:
+            # Slide Feature Extraction
+            slide_encoder = slide_encoder_factory(args.slide_encoder)
+            processor.run_slide_feature_extraction_job(
+                coords_h5_dir=os.path.join(args.job_dir, coords_dir_for_feat), # Path to the job_dir/patch_dir_name
+                slide_encoder=slide_encoder,
+                device=device_str,
+                saveas='h5', # Hardcoded to h5 for now
+                batch_limit_for_patch_features=args.feat_batch_size if args.feat_batch_size is not None else args.batch_size,
+            )
+    elif args.task == 'cache':
+        # In this mode, we only populate the cache, the main loop in main() handles it
+        # The processor's populate_cache method will be called.
+        processor.populate_cache()
+    else:
+        raise ValueError(f'Invalid task: {args.task}')
+
+
+def main():
+
+    args = parse_arguments()
+    
+    # === Handle Caching / Parallel processing ===
+    if args.wsi_cache and args.task != 'cache': # If caching is enabled for processing tasks (not just populating)
+        # We need to run a producer-consumer setup
+        from multiprocessing import Lock
+        # Lock is needed for batch_producer to prevent race conditions on shared data or output.
+        # But for this simple scenario, queue communication suffices.
+        
+        queue = Queue(maxsize=1) # Queue to hold batch IDs for processing
+        
+        # Collect all valid slides first (from original source directory)
+        all_valid_slides_from_source, all_valid_rel_paths_from_source, all_mpp_from_source_csv = \
+            Processor(
+                job_dir=args.job_dir,
+                wsi_source=args.wsi_dir,
+                wsi_ext=args.wsi_ext,
+                custom_list_of_wsis=args.custom_list_of_wsis,
+                search_nested=args.search_nested,
+                max_workers=args.max_workers,
+                reader_type=args.reader_type,
+                wsi_cache=None, # Don't pass cache here, we are just collecting paths
+                clear_cache=False, # Not relevant for path collection
+                skip_errors=True, # Allow path collection to skip errors and report.
+            ).wsis # Processor's __init__ collects and creates WSI objects
+
+        # Extract just the original paths from the WSI objects
+        original_wsi_paths = [w.original_path for w in all_valid_slides_from_source]
+
+        logger.info(f"[MAIN] Found {len(original_wsi_paths)} valid slides in {args.wsi_dir}.")
+
+        # Determine how many slides to warm up in the first batch
+        num_warmup_slides = min(len(original_wsi_paths), args.cache_batch_size)
+        warmup_slides = original_wsi_paths[:num_warmup_slides]
+
+        # Explicitly warm up the first batch outside the producer thread
+        warmup_dir = os.path.join(args.wsi_cache, "batch_0")
+        logger.info(f"[MAIN] Warmup caching first batch: {warmup_dir}")
+        batch_producer_processor = initialize_processor(args, args.wsi_dir) # Use original wsi_dir for producer's path collection
+        batch_producer_processor.populate_cache(start_idx=0) # Only populate the first batch
+        queue.put(0) # Put ID for first batch to trigger consumer
+
+        # Factory function for consumer to create a Processor instance pointing to the batch cache
+        def processor_factory_for_consumer(batch_local_dir: str) -> Processor:
+            # Create a new argparse.Namespace object for the local processor instance
+            local_args = argparse.Namespace(**vars(args))
+            local_args.wsi_dir = batch_local_dir # Point processor to the local cache batch directory
+            local_args.wsi_cache = None # Disable caching for this local processor
+            local_args.custom_list_of_wsis = None # Custom list already filtered, now process locally
+            local_args.search_nested = False # Already collected, no need to search nested locally
+            local_args.clear_cache = args.clear_cache # Pass through clear_cache decision
+            local_args.custom_mpp_keys = args.custom_mpp_keys # Pass through MPP keys
+            local_args.reader_type = args.reader_type # Pass through reader type
+            local_args.skip_errors = args.skip_errors # Pass through skip_errors
+            local_args.max_workers = args.max_workers # Pass through max_workers
+            
+            # The WSI objects in this local processor will now be constructed from `batch_local_dir`
+            # and automatically have their `original_path` set to the remote source by `Processor.__init__`
+            # `Processor.__init__` also re-initializes WSI objects correctly, including potential MPP from CSV.
+            return initialize_processor(local_args, wsi_dir_for_processor=batch_local_dir)
+
+        # Function to run the desired task for the consumer
+        def run_task_for_consumer_fn(processor_instance: Processor, task_name: str):
+            # Temporarily set the task for the current run within this thread context
+            original_task_arg = args.task
+            args.task = task_name 
+            try:
+                run_task(processor_instance, args)
+            finally:
+                args.task = original_task_arg # Restore original task arg
+
+        producer = Thread(target=batch_producer, args=(
+            queue, original_wsi_paths, num_warmup_slides, args.cache_batch_size, args.wsi_cache
+        ))
+
+        consumer = Thread(target=batch_consumer, args=(
+            queue, args.task, args.wsi_cache, processor_factory_for_consumer, run_task_for_consumer_fn
+        ))
+
+        logger.info("[MAIN] Starting producer and consumer threads for parallel processing.")
+        producer.start()
+        consumer.start()
+        producer.join() # Wait for producer to finish (all slides copied)
+        consumer.join() # Wait for consumer to finish (all slides processed)
+        
+    else:
+        # === Sequential mode or cache-only task ===
+        if args.task == 'cache':
+            # In cache-only mode, we just populate the cache and exit.
+            # No need for consumer/producer threads.
+            processor_instance = initialize_processor(args, args.wsi_dir)
+            processor_instance.populate_cache()
+            logger.info("Cache population task completed.")
+        else:
+            # Run tasks sequentially
+            processor_instance = initialize_processor(args, args.wsi_dir)
+            tasks = ['seg', 'coords', 'feat'] if args.task == 'all' else [args.task]
+            for task_name in tasks:
+                args.task = task_name # Set current task
+                run_task(processor_instance, args)
+            logger.info("Sequential processing task completed.")
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Process whole slide images for tissue segmentation, patch extraction, and feature embedding."
-    )
-
-    parser.add_argument(
-        "--slide_dir",
-        type=str,
-        required=True,
-        default="./slides",
-        help="Path to the directory containing the slide images. This parameter is required.",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="./output",
-        help="Directory where the results (tissue segmentation, patch coordinates, and patch embeddings) will be saved. Defaults to './../data/downstream'.",
-    )
-    parser.add_argument(
-        "--mag",
-        type=int,
-        default=20,
-        help="Magnification level for patch extraction. Defaults to 20x.",
-    )
-    parser.add_argument(
-        "--patch_size",
-        type=int,
-        default=224,
-        help="Size of the patches to be extracted. Defaults to 224.",
-    )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=32,
-        help="Batch size for processing slides. Defaults to 32.",
-    )
-    parser.add_argument(
-        "--encoder",
-        type=str,
-        default="conch_ViT-B-16",
-        help="Encoder to use for feature extraction. Defaults to conch_ViT-B-16.",
-    )
-
-
-    args = parser.parse_args()
-
-    logger.info(colored("Initiating processing of slides...", "green"))
-
-    embedder = SlideEmbedder(args.slide_dir, args.output_dir, args.mag, args.patch_size, args.encoder)
-    embedder.process_slides()
+    main()

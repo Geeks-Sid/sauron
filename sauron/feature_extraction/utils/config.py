@@ -1,5 +1,3 @@
-# sauron/feature_extraction/utils/config.py
-
 import json
 import logging
 import os
@@ -31,10 +29,10 @@ class JSONsaver(json.JSONEncoder):
         elif isinstance(obj, np.integer):
             return int(obj)
         elif isinstance(obj, np.ndarray):
-            # Limit array size representation for sanity
-            if obj.size > 100:
+            # Limit array size representation for sanity, but allow smaller ones to be fully dumped
+            if obj.size > 100 and obj.ndim > 0: # Avoid trying to dump huge arrays, but allow small ones
                 return f"<NumPy Array shape={obj.shape} dtype={obj.dtype}>"
-            return obj.tolist()
+            return obj.tolist() # Convert smaller arrays to list
         elif isinstance(obj, np.bool_):
             return bool(obj)
         elif isinstance(obj, (range, Path)):  # Add Path handling
