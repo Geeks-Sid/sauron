@@ -1,15 +1,21 @@
-
-Credits to original CTransPath implementation: https://github.com/Xiyue-Wang/TransPath/blob/main/ctran.py
-
-from timm_ctp.models.layers.helpers import to_2tuple
-from timm_ctp import create_model as ctp_create_model
-import torch.nn as nn
+# Credits to original CTransPath implementation: https://github.com/Xiyue-Wang/TransPath/blob/main/ctran.py
 import pdb
+
+import torch.nn as nn
+from timm_ctp import create_model as ctp_create_model
+from timm_ctp.models.layers.helpers import to_2tuple
 
 
 class ConvStem(nn.Module):
-
-    def __init__(self, img_size=224, patch_size=4, in_chans=3, embed_dim=768, norm_layer=None, flatten=True):
+    def __init__(
+        self,
+        img_size=224,
+        patch_size=4,
+        in_chans=3,
+        embed_dim=768,
+        norm_layer=None,
+        flatten=True,
+    ):
         super().__init__()
 
         assert patch_size == 4
@@ -23,11 +29,19 @@ class ConvStem(nn.Module):
         self.num_patches = self.grid_size[0] * self.grid_size[1]
         self.flatten = flatten
 
-
         stem = []
         input_dim, output_dim = 3, embed_dim // 8
         for l in range(2):
-            stem.append(nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=2, padding=1, bias=False))
+            stem.append(
+                nn.Conv2d(
+                    input_dim,
+                    output_dim,
+                    kernel_size=3,
+                    stride=2,
+                    padding=1,
+                    bias=False,
+                )
+            )
             stem.append(nn.BatchNorm2d(output_dim))
             stem.append(nn.ReLU(inplace=True))
             input_dim = output_dim
@@ -47,10 +61,13 @@ class ConvStem(nn.Module):
         x = self.norm(x)
         return x
 
-def ctranspath(img_size = 224, **kwargs):
-    model = ctp_create_model('swin_tiny_patch4_window7_224', 
-                                  embed_layer=ConvStem, 
-                                  pretrained=False,
-                                  img_size=img_size,
-                                  **kwargs)
+
+def ctranspath(img_size=224, **kwargs):
+    model = ctp_create_model(
+        "swin_tiny_patch4_window7_224",
+        embed_layer=ConvStem,
+        pretrained=False,
+        img_size=img_size,
+        **kwargs,
+    )
     return model

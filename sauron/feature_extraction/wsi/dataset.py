@@ -1,14 +1,16 @@
-from torch.utils.data import Dataset
-from typing import Callable, Tuple, Union
+from typing import Callable, Optional, Tuple, Union
+
 import numpy as np
+import torch
 from PIL import Image
+from torch.utils.data import Dataset
 
 from sauron.feature_extraction.wsi.patching import WSIPatcher
 
 
 class WSIPatcherDataset(Dataset):
-    """ Dataset from a WSI patcher to directly read tiles on a slide  """
-    
+    """Dataset from a WSI patcher to directly read tiles on a slide"""
+
     def __init__(self, patcher: WSIPatcher, transform: Optional[Callable] = None):
         """
         Initializes the dataset.
@@ -19,11 +21,13 @@ class WSIPatcherDataset(Dataset):
         """
         self.patcher = patcher
         self.transform = transform
-                              
+
     def __len__(self) -> int:
         return len(self.patcher)
-    
-    def __getitem__(self, index: int) -> Union[Tuple[torch.Tensor, Tuple[int, int]], Tuple[Tuple[int, int]]]:
+
+    def __getitem__(
+        self, index: int
+    ) -> Union[Tuple[torch.Tensor, Tuple[int, int]], Tuple[Tuple[int, int]]]:
         """
         Retrieves a patch and its coordinates.
 
@@ -44,11 +48,13 @@ class WSIPatcherDataset(Dataset):
         else:
             # item is (image_data, x, y)
             image_data, x, y = item
-            
+
             if self.transform:
                 # Ensure image_data is PIL Image if transform expects it, or numpy if transform handles that
                 if isinstance(image_data, np.ndarray):
-                    image_data = Image.fromarray(image_data) # Convert to PIL for common torchvision transforms
+                    image_data = Image.fromarray(
+                        image_data
+                    )  # Convert to PIL for common torchvision transforms
                 transformed_image = self.transform(image_data)
                 return transformed_image, (x, y)
             else:
@@ -56,7 +62,7 @@ class WSIPatcherDataset(Dataset):
                 # Convert to tensor if it's numpy array and no transform is applied, for consistency with ML pipelines
                 if isinstance(image_data, np.ndarray):
                     # Ensure channels-first (CxHxW) for PyTorch if no transform is applied
-                    if image_data.ndim == 3 and image_data.shape[2] == 3: # HWC
-                        image_data = np.transpose(image_data, (2, 0, 1)) # CHW
+                    if image_data.ndim == 3 and image_data.shape[2] == 3:  # HWC
+                        image_data = np.transpose(image_data, (2, 0, 1))  # CHW
                     return torch.from_numpy(image_data).float(), (x, y)
-                return image_data, (x, y) # Return as is if already PIL or other format
+                return image_data, (x, y)  # Return as is if already PIL or other format

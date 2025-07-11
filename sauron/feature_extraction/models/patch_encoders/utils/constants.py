@@ -9,16 +9,17 @@ KAIKO_STD = [0.5, 0.5, 0.5]
 NONE_MEAN = None
 NONE_STD = None
 
-def get_constants(norm='imagenet'):
-    if norm == 'imagenet':
+
+def get_constants(norm="imagenet"):
+    if norm == "imagenet":
         return IMAGENET_MEAN, IMAGENET_STD
-    elif norm == 'openai_clip':
+    elif norm == "openai_clip":
         return OPENAI_MEAN, OPENAI_STD
-    elif norm == 'hibou':
+    elif norm == "hibou":
         return HIBOU_MEAN, HIBOU_STD
-    elif norm == 'none':
+    elif norm == "none":
         return NONE_MEAN, NONE_STD
-    elif norm == 'kaiko':
+    elif norm == "kaiko":
         return KAIKO_MEAN, KAIKO_STD
     else:
         raise ValueError(f"Invalid norm: {norm}")

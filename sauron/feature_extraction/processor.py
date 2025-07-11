@@ -1,23 +1,48 @@
+# sauron/feature_extraction/processor.py
+# Updated file, integrating logic from trident/Processor.py
+
 from __future__ import annotations
-import os
-import sys
-import shutil
-from tqdm import tqdm
-from typing import Optional, List, Dict, Any, TypeAlias
-from inspect import signature
-import geopandas as gpd
-import pandas as pd 
+
+import json
 import logging
+import os
+import shutil
+import sys
+from inspect import signature
+from pathlib import Path
+from typing import Any, Dict, List, Optional, TypeAlias
 
-import torch 
+import geopandas as gpd
+import torch
+from tqdm import tqdm
 
-from sauron.feature_extraction.wsi.factory import load_wsi, WSIReaderType, OPENSLIDE_EXTENSIONS, PIL_EXTENSIONS
-from sauron.feature_extraction.wsi.base import WSI # For type hinting
-from sauron.feature_extraction.models.segmentation.factory import segmentation_model_factory, SegmentationModel # For type hinting
-from sauron.feature_extraction.models.patch_encoders.factory import encoder_factory as patch_encoder_factory, BasePatchEncoder # For type hinting
-from sauron.feature_extraction.models.slide_encoders.factory import encoder_factory as slide_encoder_factory, slide_to_patch_encoder_name, BaseSlideEncoder # For type hinting
-from sauron.feature_extraction.utils.io import create_lock, remove_lock, is_locked, update_log, collect_valid_slides, JSONsaver #, get_dir, has_internet_connection
-
+from sauron.feature_extraction.models.patch_encoders.factory import (
+    BasePatchEncoder,
+)
+from sauron.feature_extraction.models.patch_encoders.factory import (
+    encoder_factory as patch_encoder_factory,
+)  # For type hinting
+from sauron.feature_extraction.models.segmentation.factory import (
+    SegmentationModel,
+)  # For type hinting
+from sauron.feature_extraction.models.slide_encoders.factory import (
+    BaseSlideEncoder,
+    slide_to_patch_encoder_name,
+)
+from sauron.feature_extraction.utils.config import JSONsaver
+from sauron.feature_extraction.utils.io import (
+    collect_valid_slides,
+    create_lock,
+    is_locked,
+    remove_lock,
+    update_log,
+)
+from sauron.feature_extraction.wsi.factory import (
+    OPENSLIDE_EXTENSIONS,
+    PIL_EXTENSIONS,
+    WSIReaderType,
+    load_wsi,
+)
 
 # --- Setup Basic Logging ---
 logger = logging.getLogger(__name__)
@@ -27,7 +52,6 @@ PathLike: TypeAlias = str | os.PathLike
 
 
 class Processor:
-
     def __init__(
         self,
         job_dir: PathLike,
@@ -38,47 +62,47 @@ class Processor:
         skip_errors: bool = False,
         custom_mpp_keys: Optional[List[str]] = None,
         custom_list_of_wsis: Optional[PathLike] = None,
-        max_workers: Optional[int] = None, # Used by dataloaders for num_workers
+        max_workers: Optional[int] = None,  # Used by dataloaders for num_workers
         reader_type: Optional[WSIReaderType] = None,
-        search_nested: bool = False, 
+        search_nested: bool = False,
     ) -> None:
         """
-        The `Processor` class handles all preprocessing steps starting from whole-slide images (WSIs). 
-    
+        The `Processor` class handles all preprocessing steps starting from whole-slide images (WSIs).
+
         Available methods:
             - `run_segmentation_job`: Performs tissue segmentation on all slides managed by the processor.
             - `run_patching_job`: Extracts patch coordinates from the segmented tissue regions of slides.
             - `run_patch_feature_extraction_job`: Extracts patch-level features using a specified patch encoder.
             - `run_slide_feature_extraction_job`: Extracts slide-level features using a specified slide encoder.
-            
+
         Parameters:
-            job_dir (PathLike): 
-                The directory where the results of processing, including segmentations, patches, and extracted features, 
+            job_dir (PathLike):
+                The directory where the results of processing, including segmentations, patches, and extracted features,
                 will be saved. This should be an existing directory with sufficient storage.
-            wsi_source (PathLike): 
-                The directory containing the WSIs to be processed. This can either be a local directory 
-                or a network-mounted drive. All slides in this directory matching the specified file 
+            wsi_source (PathLike):
+                The directory containing the WSIs to be processed. This can either be a local directory
+                or a network-mounted drive. All slides in this directory matching the specified file
                 extensions will be considered for processing.
-            wsi_ext (List[str]): 
-                A list of accepted WSI file extensions, such as ['.ndpi', '.svs']. This allows for 
-                filtering slides based on their format. If set to None, a default list of common extensions 
+            wsi_ext (List[str]):
+                A list of accepted WSI file extensions, such as ['.ndpi', '.svs']. This allows for
+                filtering slides based on their format. If set to None, a default list of common extensions
                 will be used. Defaults to None.
-            wsi_cache (PathLike, optional): 
-                An optional directory for caching WSIs locally. If specified, slides will be copied 
-                from the source directory to this local directory before processing, improving performance 
+            wsi_cache (PathLike, optional):
+                An optional directory for caching WSIs locally. If specified, slides will be copied
+                from the source directory to this local directory before processing, improving performance
                 when the source is a network drive. Defaults to None.
             clear_cache (bool, optional):
-                A flag indicating whether slides in the cache should be deleted after processing. 
-                This helps manage storage space. Defaults to False. 
-            skip_errors (bool, optional): 
-                A flag specifying whether to continue processing if an error occurs on a slide. 
+                A flag indicating whether slides in the cache should be deleted after processing.
+                This helps manage storage space. Defaults to False.
+            skip_errors (bool, optional):
+                A flag specifying whether to continue processing if an error occurs on a slide.
                 If set to False, the process will stop on the first error. Defaults to False.
-            custom_mpp_keys (List[str], optional): 
-                A list of custom keys in the slide metadata for retrieving the microns per pixel (MPP) value. 
+            custom_mpp_keys (List[str], optional):
+                A list of custom keys in the slide metadata for retrieving the microns per pixel (MPP) value.
                 If not provided, standard keys will be used. Defaults to None.
-            custom_list_of_wsis (PathLike, optional): 
-                Path to a csv file with a custom list of WSIs to process in a field called 'wsi' (including extensions). If provided, only 
-                these slides will be considered for processing. Defaults to None, which means all 
+            custom_list_of_wsis (PathLike, optional):
+                Path to a csv file with a custom list of WSIs to process in a field called 'wsi' (including extensions). If provided, only
+                these slides will be considered for processing. Defaults to None, which means all
                 slides matching the wsi_ext extensions will be processed.
                 Note: If `custom_list_of_wsis` is provided, any names that do not match the available slides will be ignored, and a warning will be printed.
             max_workers (int, optional):
@@ -87,12 +111,12 @@ class Processor:
             reader_type (WSIReaderType, optional):
                 Force the image reader engine to use. Options are are ["openslide", "image", "cucim"]. Defaults to None
                 (auto-determine the right engine based on image extension).
-            search_nested (bool, optional):  
+            search_nested (bool, optional):
                 If True, the processor will recursively search for WSIs within all subdirectories of `wsi_source`.
-                All matching files (based on `wsi_ext`) found at any depth within the directory  
-                tree will be included. Each slide will be identified by its relative path to `wsi_source`, but only  
-                the filename (excluding directory structure) will be used for downstream outputs (e.g., segmentation filenames).  
-                If False, only files directly inside `wsi_source` will be considered.  
+                All matching files (based on `wsi_ext`) found at any depth within the directory
+                tree will be included. Each slide will be identified by its relative path to `wsi_source`, but only
+                the filename (excluding directory structure) will be used for downstream outputs (e.g., segmentation filenames).
+                If False, only files directly inside `wsi_source` will be considered.
                 Defaults to False.
 
 
@@ -113,9 +137,11 @@ class Processor:
         Raises:
             AssertionError: If `wsi_ext` is not a list or if any extension does not start with a period.
         """
-        
+
         if not (sys.version_info.major >= 3 and sys.version_info.minor >= 9):
-            raise EnvironmentError("Sauron requires Python 3.9 or above. Python 3.10 is recommended.")
+            raise EnvironmentError(
+                "Sauron requires Python 3.9 or above. Python 3.10 is recommended."
+            )
 
         self.job_dir = os.path.abspath(job_dir)
         self.wsi_source = os.path.abspath(wsi_source)
@@ -129,9 +155,13 @@ class Processor:
         self.search_nested = search_nested
 
         # Validate extensions
-        assert isinstance(self.wsi_ext, list), f'wsi_ext must be a list, got {type(self.wsi_ext)}'
+        assert isinstance(self.wsi_ext, list), (
+            f"wsi_ext must be a list, got {type(self.wsi_ext)}"
+        )
         for ext in self.wsi_ext:
-            assert ext.startswith('.'), f'Invalid extension: {ext} (must start with a period)'
+            assert ext.startswith("."), (
+                f"Invalid extension: {ext} (must start with a period)"
+            )
 
         # === Collect slide paths and relative paths ===
         full_paths, rel_paths, mpp_values_from_csv = collect_valid_slides(
@@ -140,39 +170,53 @@ class Processor:
             wsi_ext=self.wsi_ext,
             search_nested=search_nested,
             max_workers=max_workers,
-            return_mpp_from_csv=True, # New return
-            return_relative_paths=True
+            return_mpp_from_csv=True,  # New return
+            return_relative_paths=True,
         )
 
         self.wsi_rel_paths = rel_paths if custom_list_of_wsis else None
 
-        logger.info(f'[PROCESSOR] Found {len(full_paths)} valid slides in {wsi_source}.')
+        logger.info(
+            f"[PROCESSOR] Found {len(full_paths)} valid slides in {wsi_source}."
+        )
 
         # === Initialize WSIs ===
         self.wsis = []
         init_log_path = os.path.join(self.job_dir, "_processor_init_log.txt")
         for wsi_idx, abs_path in enumerate(full_paths):
-            name = os.path.basename(abs_path) # Name for output files is just the filename, not full relative path
-            original_full_path = full_paths[wsi_idx] # The true path of the WSI file on disk
-            
+            name = os.path.basename(
+                abs_path
+            )  # Name for output files is just the filename, not full relative path
+            original_full_path = full_paths[
+                wsi_idx
+            ]  # The true path of the WSI file on disk
+
             # Use original_full_path to determine if caching is needed
-            load_path = os.path.join(self.wsi_cache, name) if self.wsi_cache else original_full_path
+            load_path = (
+                os.path.join(self.wsi_cache, name)
+                if self.wsi_cache
+                else original_full_path
+            )
 
             tissue_seg_path = os.path.join(
-                self.job_dir, 'segmentation_results', 'contours_geojson',
-                f'{os.path.splitext(name)[0]}.geojson'
+                self.job_dir,
+                "segmentation_results",
+                "contours_geojson",
+                f"{os.path.splitext(name)[0]}.geojson",
             )
             if not os.path.exists(tissue_seg_path):
                 tissue_seg_path = None
 
             try:
                 slide = load_wsi(
-                    slide_path=load_path, # Path where WSI is expected to be *loaded from*
-                    original_path=original_full_path, # Original source path for caching logic
-                    name=name, # Base filename for output file naming
+                    slide_path=load_path,  # Path where WSI is expected to be *loaded from*
+                    original_path=original_full_path,  # Original source path for caching logic
+                    name=name,  # Base filename for output file naming
                     tissue_seg_path=tissue_seg_path,
                     custom_mpp_keys=self.custom_mpp_keys,
-                    mpp=mpp_values_from_csv[wsi_idx] if mpp_values_from_csv is not None else None,
+                    mpp=mpp_values_from_csv[wsi_idx]
+                    if mpp_values_from_csv is not None
+                    else None,
                     max_workers=self.max_workers,
                     reader_type=self.reader_type,
                     lazy_init=True,
@@ -181,9 +225,7 @@ class Processor:
                 update_log(init_log_path, name, "INFO - WSI object created")
 
             except Exception as e:
-                message = (
-                    f"ERROR creating WSI object for {name} at {load_path} (original: {original_full_path}): {e}"
-                )
+                message = f"ERROR creating WSI object for {name} at {load_path} (original: {original_full_path}): {e}"
                 update_log(init_log_path, name, message)
                 if self.skip_errors:
                     logger.error(message)
@@ -213,18 +255,21 @@ class Processor:
 
         cache_log_path = os.path.join(self.wsi_cache, "_cache_log.txt")
         logger.info(f"Populating cache directory: {self.wsi_cache}")
-        
+
         # Filter slides to process based on start_idx
         wsis_to_process = self.wsis[start_idx:]
-        
+
         progress_bar = tqdm(
-            wsis_to_process, desc="Populating cache", total=len(wsis_to_process), unit="slide"
+            wsis_to_process,
+            desc="Populating cache",
+            total=len(wsis_to_process),
+            unit="slide",
         )
 
         for wsi in progress_bar:
             slide_fullname = wsi.name + wsi.ext
             cache_file_path = os.path.join(self.wsi_cache, slide_fullname)
-            source_file_path = wsi.original_path # Use the true source path
+            source_file_path = wsi.original_path  # Use the true source path
 
             progress_bar.set_postfix_str(f"{slide_fullname}")
 
@@ -243,10 +288,12 @@ class Processor:
                 update_log(cache_log_path, slide_fullname, "LOCK - Copying")
                 shutil.copy2(source_file_path, cache_file_path)
                 # Handle .mrxs subdirectories if they exist (trident's Concurrency.py)
-                if source_file_path.lower().endswith('.mrxs'):
+                if source_file_path.lower().endswith(".mrxs"):
                     mrxs_dir = os.path.splitext(source_file_path)[0]
                     if os.path.exists(mrxs_dir) and os.path.isdir(mrxs_dir):
-                        dest_mrxs_dir = os.path.join(self.wsi_cache, os.path.basename(mrxs_dir))
+                        dest_mrxs_dir = os.path.join(
+                            self.wsi_cache, os.path.basename(mrxs_dir)
+                        )
                         shutil.copytree(mrxs_dir, dest_mrxs_dir)
                 update_log(cache_log_path, slide_fullname, "OK - Copied")
             except Exception as e:
@@ -339,14 +386,14 @@ class Processor:
             # --- Pre-computation Checks ---
             if os.path.exists(geojson_path) and not is_locked(geojson_path):
                 update_log(log_fp, slide_fullname, "DONE - Already segmented")
-                self.cleanup_wsi_cache(slide_fullname) # Clean up cache if done
+                self.cleanup_wsi_cache(slide_fullname)  # Clean up cache if done
                 continue
             if is_locked(geojson_path):
                 update_log(log_fp, slide_fullname, "SKIP - Locked")
                 continue
-            
+
             # Check if original WSI file exists at its load path (which could be cache)
-            if not os.path.exists(wsi.slide_path): 
+            if not os.path.exists(wsi.slide_path):
                 update_log(
                     log_fp,
                     slide_fullname,
@@ -377,7 +424,7 @@ class Processor:
                         target_mag=getattr(
                             artifact_remover_model, "target_mag", seg_mag
                         ),
-                        holes_are_tissue=False, # Artifact remover usually removes holes (artifacts)
+                        holes_are_tissue=False,  # Artifact remover usually removes holes (artifacts)
                         job_dir=paths["base"],
                         batch_size=batch_size,
                         device=device,
@@ -475,14 +522,14 @@ class Processor:
             # --- Pre-computation Checks ---
             if os.path.exists(coords_h5_path) and not is_locked(coords_h5_path):
                 update_log(log_fp, slide_fullname, "DONE - Coords already generated")
-                self.cleanup_wsi_cache(slide_fullname) # Clean up cache if done
+                self.cleanup_wsi_cache(slide_fullname)  # Clean up cache if done
                 continue
             if is_locked(coords_h5_path):
                 update_log(log_fp, slide_fullname, "SKIP - Locked")
                 continue
-            
+
             # Check if original WSI file exists at its load path (which could be cache)
-            if not os.path.exists(wsi.slide_path): 
+            if not os.path.exists(wsi.slide_path):
                 update_log(
                     log_fp,
                     slide_fullname,
@@ -556,22 +603,18 @@ class Processor:
                         logger.warning(
                             f"Could not remove lock {coords_h5_path}.lock: {lock_err}"
                         )
-                wsi.close() # Close WSI handle to free resources
+                wsi.close()  # Close WSI handle to free resources
                 self.cleanup_wsi_cache(slide_fullname)
 
         logger.info(f"Patching job finished. Coordinates in: {coords_h5_dir}")
         return coords_h5_dir  # Return path to HDF5 coordinate files
 
-    # The deprecated decorator for run_feature_extraction_job is handled in trident's Processor,
-    # and now can be added here (or just remove the alias). For simplicity, let's just make
-    # `run_patch_feature_extraction_job` the primary.
-
     def run_patch_feature_extraction_job(
         self,
         coords_h5_dir: str,  # Dir containing HDF5 patch coord files
-        patch_encoder: BasePatchEncoder, # Use new base class for type hinting
+        patch_encoder: BasePatchEncoder,  # Use new base class for type hinting
         device: str = "cuda:0",
-        saveas: str = 'h5',
+        saveas: str = "h5",
         batch_limit: int = 512,
         features_dir_name: Optional[str] = None,
     ) -> str:
@@ -601,7 +644,9 @@ class Processor:
         sig = signature(self.run_patch_feature_extraction_job)
         local_attrs = {k: v for k, v in locals().items() if k in sig.parameters}
         local_attrs["patch_encoder_name"] = enc_name
-        local_attrs["patch_encoder_embedding_dim"] = getattr(patch_encoder, 'embedding_dim', 'unknown')
+        local_attrs["patch_encoder_embedding_dim"] = getattr(
+            patch_encoder, "embedding_dim", "unknown"
+        )
 
         self.save_config(
             saveto=paths["config"],
@@ -628,14 +673,14 @@ class Processor:
             # --- Pre-computation Checks ---
             if os.path.exists(feature_file_path) and not is_locked(feature_file_path):
                 update_log(log_fp, slide_fullname, "DONE - Features already extracted")
-                self.cleanup_wsi_cache(slide_fullname) # Clean up cache if done
+                self.cleanup_wsi_cache(slide_fullname)  # Clean up cache if done
                 continue
             if is_locked(feature_file_path):
                 update_log(log_fp, slide_fullname, "SKIP - Locked")
                 continue
-            
+
             # Check if original WSI file exists at its load path (which could be cache)
-            if not os.path.exists(wsi.slide_path): 
+            if not os.path.exists(wsi.slide_path):
                 update_log(
                     log_fp,
                     slide_fullname,
@@ -693,9 +738,8 @@ class Processor:
                         logger.warning(
                             f"Could not remove lock {feature_file_path}.lock: {lock_err}"
                         )
-                wsi.close() # Close WSI handle to free resources
+                wsi.close()  # Close WSI handle to free resources
                 self.cleanup_wsi_cache(slide_fullname)
-
 
         logger.info(
             f"Patch feature extraction finished. Features in: {features_base_dir}"
@@ -704,11 +748,11 @@ class Processor:
 
     def run_slide_feature_extraction_job(
         self,
-        slide_encoder: BaseSlideEncoder, # Use new base class for type hinting
-        coords_h5_dir: str, # Base directory for the patching job (contains 'patches' and 'features_...')
+        slide_encoder: BaseSlideEncoder,  # Use new base class for type hinting
+        coords_h5_dir: str,  # Base directory for the patching job (contains 'patches' and 'features_...')
         device: str = "cuda:0",
-        saveas: str = 'h5',
-        batch_limit_for_patch_features: int = 512, # Used if auto-generating patch features
+        saveas: str = "h5",
+        batch_limit_for_patch_features: int = 512,  # Used if auto-generating patch features
         slide_features_dir_name: Optional[str] = None,
     ) -> str:
         """Extracts slide-level features using a specified slide encoder model."""
@@ -717,7 +761,7 @@ class Processor:
             raise FileNotFoundError(
                 f"Coordinates directory (e.g., .../job_dir/patch_job_name) not found: {coords_h5_dir}"
             )
-        
+
         slide_enc_name = getattr(slide_encoder, "enc_name", "custom_slide_encoder")
         required_patch_enc_name = None
         # Infer required patch encoder name from slide encoder name
@@ -728,14 +772,34 @@ class Processor:
             # For specific slide encoders, use the predefined mapping
             required_patch_enc_name = slide_to_patch_encoder_name[slide_enc_name]
 
-        # Construct the expected path for patch features based on the inferred name
-        expected_patch_features_dir = os.path.join(coords_h5_dir, f'features_{required_patch_enc_name}')
+        # Bug Fix: Use this consistent expected_patch_features_dir for all related paths
+        # This is the path where the patch features *should* be, and where they will be generated if missing.
+        if (
+            required_patch_enc_name
+        ):  # Only define if a patch encoder is actually required
+            expected_patch_features_dir = os.path.join(
+                coords_h5_dir, f"features_{required_patch_enc_name}"
+            )
+        else:  # If no specific patch encoder is required (e.g., custom model), fallback or raise error
+            # For models that don't need a specific patch encoder (e.g., direct image input, though not typical for SlideEncoders here)
+            # or if the user passed a `patch_features_dir` directly which is not derived from a known encoder name
+            # In this case, `patch_features_dir` should be treated as the direct input for patch features.
+            # We assume for this method that `patch_features_dir` (argument) *is* the directory containing features.
+            # If `required_patch_enc_name` is None, then `patch_features_dir` (argument) must be the actual path.
+            # However, the method signature takes `coords_h5_dir` as the base patching job directory.
+            # To be robust, if `required_patch_enc_name` is None, we need an explicit `patch_features_input_dir` argument.
+            # For now, let's assume `slide_encoder` implies a `required_patch_enc_name` for this pipeline.
+            # If a model needs different input (e.g. raw images, or different feature structure), it should have its own method.
+            raise ValueError(
+                f"Slide encoder '{slide_enc_name}' does not have a mapped patch encoder. Cannot proceed with auto-generation or locating patch features."
+            )
 
         # Determine output directory for slide features
         if slide_features_dir_name is None:
             slide_features_dir_name = f"slide_features_{slide_enc_name}"
         slide_features_base_dir = os.path.join(
-            coords_h5_dir, slide_features_dir_name # Slide features are children of the same patching job directory
+            coords_h5_dir,
+            slide_features_dir_name,  # Slide features are children of the same patching job directory
         )
         os.makedirs(slide_features_base_dir, exist_ok=True)
 
@@ -752,52 +816,59 @@ class Processor:
         if required_patch_enc_name:
             # Check if all patch feature files for this encoder exist
             all_patch_features_exist = all(
-                os.path.exists(os.path.join(expected_patch_features_dir, f"{wsi.name}.h5"))
+                os.path.exists(
+                    os.path.join(expected_patch_features_dir, f"{wsi.name}.h5")
+                )
                 for wsi in self.wsis
             )
-            
+
             if not all_patch_features_exist:
                 logger.warning(
                     f"Required patch features ('{required_patch_enc_name}') missing in '{expected_patch_features_dir}'. Attempting generation."
                 )
                 try:
                     patch_encoder = patch_encoder_factory(required_patch_enc_name)
-                    # The actual coordinate H5 files are in a 'patches' subfolder
-                    patch_coords_h5_dir_for_generation = os.path.join(coords_h5_dir, 'patches')
-                    
+                    # The actual coordinate H5 files are in a 'patches' subfolder within coords_h5_dir
+                    patch_coords_h5_dir_for_generation = os.path.join(
+                        coords_h5_dir, "patches"
+                    )
+
                     if not os.path.isdir(patch_coords_h5_dir_for_generation):
                         raise FileNotFoundError(
                             f"Coordinate directory '{patch_coords_h5_dir_for_generation}' needed for auto-generation not found."
                         )
 
-                    # Run the patch feature job, ensuring it saves to the correct input dir for *this* job
+                    # Run the patch feature job, ensuring it saves to the correct directory (`expected_patch_features_dir`)
                     self.run_patch_feature_extraction_job(
-                        coords_h5_dir=patch_coords_h5_dir_for_generation, # This is the path to the 'patches' dir
+                        coords_h5_dir=patch_coords_h5_dir_for_generation,  # This is the path to the 'patches' dir
                         patch_encoder=patch_encoder,
                         device=device,
                         saveas="h5",  # Must be h5 for slide feature extraction
                         batch_limit=batch_limit_for_patch_features,
-                        features_dir_name=os.path.basename(expected_patch_features_dir), # Ensure it saves to the desired 'features_...' folder
+                        features_dir_name=os.path.basename(
+                            expected_patch_features_dir
+                        ),  # Ensure it saves to the desired 'features_...' folder
                     )
-                    logger.info(f"Auto-generation of patch features ({required_patch_enc_name}) complete.")
+                    logger.info(
+                        f"Auto-generation of patch features ({required_patch_enc_name}) complete."
+                    )
                 except Exception as patch_gen_e:
                     raise RuntimeError(
                         f"Failed to auto-generate required patch features ('{required_patch_enc_name}'). "
                         f"Generate manually or ensure they exist in '{expected_patch_features_dir}'. Error: {patch_gen_e}"
                     ) from patch_gen_e
-        elif not slide_enc_name.startswith("mean-"): # If it's not a mean-pooling model and no specific patch encoder is mapped
-            logger.warning(
-                f"Cannot auto-generate patch features for '{slide_enc_name}' (unknown requirement). Ensure they exist in '{patch_features_dir}'."
-            )
+        # No else needed: If required_patch_enc_name is None, it would have raised an error above.
 
         # --- Save Configuration ---
         sig = signature(self.run_slide_feature_extraction_job)
         local_attrs = {k: v for k, v in locals().items() if k in sig.parameters}
         local_attrs["slide_encoder_name"] = slide_enc_name
-        local_attrs["slide_encoder_embedding_dim"] = getattr(slide_encoder, 'embedding_dim', 'unknown')
+        local_attrs["slide_encoder_embedding_dim"] = getattr(
+            slide_encoder, "embedding_dim", "unknown"
+        )
         if required_patch_enc_name:
             local_attrs["required_patch_encoder"] = required_patch_enc_name
-            
+
         self.save_config(
             saveto=paths["config"],
             local_attrs=local_attrs,
@@ -816,6 +887,8 @@ class Processor:
 
         for wsi in progress_bar:
             slide_fullname = wsi.name + wsi.ext
+            # Bug Fix applied here: Consistently use `expected_patch_features_dir` for input path
+            # to ensure we look where the features were (or should have been) generated.
             patch_feature_h5_path = os.path.join(
                 expected_patch_features_dir, f"{wsi.name}.h5"
             )  # Assumes h5 input for features
@@ -831,21 +904,22 @@ class Processor:
                 update_log(
                     log_fp, slide_fullname, "DONE - Slide features already extracted"
                 )
-                self.cleanup_wsi_cache(slide_fullname) # Clean up cache if done
+                self.cleanup_wsi_cache(slide_fullname)  # Clean up cache if done
                 continue
             if is_locked(slide_feature_file_path):
                 update_log(log_fp, slide_fullname, "SKIP - Locked")
                 continue
             if not os.path.exists(patch_feature_h5_path):
+                # This should ideally not happen if auto-generation ran successfully, but good for robustness
                 update_log(
                     log_fp,
                     slide_fullname,
                     f"SKIP - Required patch feature file not found: {patch_feature_h5_path}",
                 )
                 continue
-            
+
             # Check if original WSI file exists at its load path (which could be cache)
-            if not os.path.exists(wsi.slide_path): 
+            if not os.path.exists(wsi.slide_path):
                 logger.debug(
                     f"WSI file {wsi.slide_path} missing, but proceeding with feature file (if not strictly needed)."
                 )
@@ -856,7 +930,7 @@ class Processor:
                 create_lock(slide_feature_file_path)
                 update_log(log_fp, slide_fullname, "LOCK - Extracting slide features")
                 # Initialize WSI mainly for metadata access if needed by slide encoder (e.g., GigaPath needs patch_size_level0 from coords.attrs)
-                wsi._lazy_initialize() 
+                wsi._lazy_initialize()
 
                 generated_slide_feature_path = wsi.extract_slide_features(
                     patch_features_path=patch_feature_h5_path,
@@ -905,21 +979,29 @@ class Processor:
         """Removes the specified WSI file and its associated .mrxs directory from the cache if enabled."""
         if self.wsi_cache and self.clear_cache:
             cache_file_path = os.path.join(self.wsi_cache, filename)
-            
+
             # Check for .mrxs subdirectory
             mrxs_dir_path = os.path.splitext(cache_file_path)[0]
-            
+
             if os.path.exists(cache_file_path):
-                if not is_locked(cache_file_path): # Only clean if not locked by another process
+                if not is_locked(
+                    cache_file_path
+                ):  # Only clean if not locked by another process
                     try:
                         os.remove(cache_file_path)
                         logger.debug(f"Cleaned {filename} from cache.")
                         # Check for and remove associated .mrxs directory
-                        if os.path.isdir(mrxs_dir_path) and filename.lower().endswith('.mrxs'):
+                        if os.path.isdir(mrxs_dir_path) and filename.lower().endswith(
+                            ".mrxs"
+                        ):
                             shutil.rmtree(mrxs_dir_path)
-                            logger.debug(f"Cleaned associated .mrxs directory {os.path.basename(mrxs_dir_path)} from cache.")
+                            logger.debug(
+                                f"Cleaned associated .mrxs directory {os.path.basename(mrxs_dir_path)} from cache."
+                            )
                     except OSError as e:
-                        logger.warning(f"Failed to remove {cache_file_path} from cache: {e}")
+                        logger.warning(
+                            f"Failed to remove {cache_file_path} from cache: {e}"
+                        )
                 # else: Logged by previous checks
 
     def save_config(
@@ -932,7 +1014,7 @@ class Processor:
         if ignore is None:
             ignore = [
                 "wsis",
-                "loop", # tqdm loop object
+                "loop",  # tqdm loop object
                 "wsi_source",
                 "wsi_cache",
             ]  # Exclude sensitive/large/redundant
@@ -948,7 +1030,7 @@ class Processor:
                 try:
                     # Attempt to dump to ensure serializability with custom JSONsaver
                     # This is just a test; the actual dump uses the same logic
-                    JSONsaver().encode(v) 
+                    JSONsaver().encode(v)
                     config_to_save[k] = v
                 except (TypeError, OverflowError):
                     config_to_save[k] = (
@@ -964,7 +1046,7 @@ class Processor:
                         v = str(v)
                     try:
                         # Attempt to dump to ensure serializability with custom JSONsaver
-                        JSONsaver().encode(v) 
+                        JSONsaver().encode(v)
                         config_to_save[k] = v
                     except (TypeError, OverflowError):
                         # Special handling for models - just save name if possible
@@ -986,7 +1068,9 @@ class Processor:
             os.makedirs(os.path.dirname(saveto), exist_ok=True)
             with open(saveto, "w") as f:
                 # Use JSONsaver for the actual dump
-                json.dump(config_to_save, f, indent=4, cls=JSONsaver, ensure_ascii=False)
+                json.dump(
+                    config_to_save, f, indent=4, cls=JSONsaver, ensure_ascii=False
+                )
             logger.debug(f"Configuration saved successfully to {saveto}")
         except Exception as e:
             logger.error(f"Failed to save configuration to {saveto}: {e}")
@@ -1000,7 +1084,7 @@ class Processor:
         if hasattr(self, "wsis"):
             for wsi in self.wsis:
                 try:
-                    wsi.close() # Calls the backend-specific close method
+                    wsi.close()  # Calls the backend-specific close method
                 except Exception:
                     pass
             self.wsis.clear()
@@ -1011,7 +1095,9 @@ class Processor:
 
         # Explicit garbage collection and CUDA cache release
         import gc
+
         import torch
+
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

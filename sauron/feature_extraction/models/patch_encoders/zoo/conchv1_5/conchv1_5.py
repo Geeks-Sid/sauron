@@ -1,4 +1,4 @@
-```
+
 """ Modified based on https://github.com/bytedance/ibot/blob/da316d82636a7a7356835ef224b13d5f3ace0489/models/vision_transformer.py and timm (https://github.com/huggingface/pytorch-image-models) v0.9.2
 """
 import math
@@ -662,17 +662,21 @@ def create_model_from_pretrained(
     model = CONCHVisionTower()
     # download checkpoint from huggingface if providing hub address 
     if checkpoint_path.startswith("hf_hub:"): 
-        from huggingface_hub import hf_hub_download
-        _ = hf_hub_download(
-            checkpoint_path[len("hf_hub:"):], 
-            cache_dir=cache_dir,
-            filename="meta.yaml",
-        )
-        checkpoint_path = hf_hub_download(
-            checkpoint_path[len("hf_hub:"):], 
-            cache_dir=cache_dir,
-            filename="pytorch_model_vision.bin",
-        )
+        try:
+            from huggingface_hub import hf_hub_download
+            _ = hf_hub_download(
+                checkpoint_path[len("hf_hub:"):], 
+                cache_dir=cache_dir,
+                filename="meta.yaml",
+            )
+            checkpoint_path = hf_hub_download(
+                checkpoint_path[len("hf_hub:"):], 
+                cache_dir=cache_dir,
+                filename="pytorch_model_vision.bin",
+            )
+        except Exception as e:
+            print(f"Error downloading model from Hugging Face Hub: {e}")
+            return None, None
 
     # restore checkpoint 
     state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
@@ -689,4 +693,4 @@ def create_model_from_pretrained(
 
     return model, eval_transform
 
-```
+    

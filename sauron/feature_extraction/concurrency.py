@@ -1,11 +1,13 @@
 # This file is new, adapted from trident/Concurrency.py
 
-import os
 import gc
-import torch
+import os
 import shutil
-from typing import List, Callable
 from queue import Queue
+from typing import Callable, List
+
+import torch
+
 
 def cache_batch(wsis: List[str], dest_dir: str) -> List[str]:
     """
@@ -23,13 +25,14 @@ def cache_batch(wsis: List[str], dest_dir: str) -> List[str]:
         copied.append(dest_path)
 
         # Handle .mrxs specific subdirectories
-        if wsi_path.lower().endswith('.mrxs'):
+        if wsi_path.lower().endswith(".mrxs"):
             mrxs_dir = os.path.splitext(wsi_path)[0]
             if os.path.exists(mrxs_dir) and os.path.isdir(mrxs_dir):
                 dest_mrxs_dir = os.path.join(dest_dir, os.path.basename(mrxs_dir))
                 shutil.copytree(mrxs_dir, dest_mrxs_dir)
 
     return copied
+
 
 def batch_producer(
     queue: Queue,
@@ -49,10 +52,10 @@ def batch_producer(
         cache_dir (str): Root directory where batches will be cached.
     """
     # Ensure start_idx is correctly used for actual slice
-    for i in range(0, len(valid_slides), batch_size): # Iterate through all batches
-        batch_paths = valid_slides[i:i + batch_size]
+    for i in range(0, len(valid_slides), batch_size):  # Iterate through all batches
+        batch_paths = valid_slides[i : i + batch_size]
         batch_id = i // batch_size
-        
+
         # Only process if this batch is within the requested start_idx range
         if i < start_idx:
             continue
@@ -63,6 +66,7 @@ def batch_producer(
         queue.put(batch_id)
 
     queue.put(None)  # Sentinel to signal completion
+
 
 def batch_consumer(
     queue: Queue,
@@ -94,8 +98,8 @@ def batch_consumer(
         processor = processor_factory(ssd_batch_dir)
 
         try:
-            if task == 'all':
-                for subtask in ['seg', 'coords', 'feat']:
+            if task == "all":
+                for subtask in ["seg", "coords", "feat"]:
                     run_task_fn(processor, subtask)
             else:
                 run_task_fn(processor, task)

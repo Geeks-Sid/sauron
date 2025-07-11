@@ -75,24 +75,54 @@ class NLLSurvLoss(object):
         else:
             return nll_loss(hazards, S, Y, c, alpha=alpha)
 
-    # h_padded = torch.cat([torch.zeros_like(c), hazards], 1)
-    # reg = - (1 - c) * (torch.log(torch.gather(hazards, 1, Y)) + torch.gather(torch.cumsum(torch.log(1-h_padded), dim=1), 1, Y))
-
 
 class CoxSurvLoss(object):
-    def __call__(hazards, S, c, **kwargs):
+    def __call__(self, hazards, S, c, **kwargs):
         # This calculation credit to Travers Ching https://github.com/traversc/cox-nnet
         # Cox-nnet: An artificial neural network method for prognosis prediction of high-throughput omics data
-        current_batch_len = len(S)
-        R_mat = np.zeros([current_batch_len, current_batch_len], dtype=int)
-        for i in range(current_batch_len):
-            for j in range(current_batch_len):
-                R_mat[i, j] = S[j] >= S[i]
 
-        R_mat = torch.FloatTensor(R_mat).to(device)
-        theta = hazards.reshape(-1)
-        exp_theta = torch.exp(theta)
-        loss_cox = -torch.mean(
-            (theta - torch.log(torch.sum(exp_theta * R_mat, dim=1))) * (1 - c)
+        # Ensure hazards, S (event times), and c (censoring status) are 1D tensors
+        # hazards: Predicted log-risk scores for each patient. Shape: [batch_size]
+        # S: Observed event/censoring times for each patient. Shape: [batch_size]
+        # c: Censoring status (0 for event, 1 for censored) for each patient. Shape: [batch_size]
+
+        # Squeeze inputs to ensure they are 1D, as Cox loss operates on scalar times/risks per patient.
+        hazards = hazards.squeeze()
+        S = S.squeeze()
+        c = c.squeeze()
+
+        # Basic validation for input dimensions after squeezing
+        if hazards.dim() != 1 or S.dim() != 1 or c.dim() != 1:
+            raise ValueError(
+                "Input tensors hazards, S, and c must be 1-dimensional after squeezing."
+                f" Got hazards.shape={hazards.shape}, S.shape={S.shape}, c.shape={c.shape}"
+            )
+
+        current_batch_len = len(S)
+
+        # R_mat[i, j] = 1 if patient j is in the risk set of patient i (i.e., S[j] >= S[i]), else 0.
+        # This can be computed efficiently using broadcasting, removing the slow numpy loop.
+        # S.unsqueeze(0) makes S a row vector (1, batch_size)
+        # S.unsqueeze(1) makes S a column vector (batch_size, 1)
+        # The comparison (S.unsqueeze(0) >= S.unsqueeze(1)) then broadcasts to (batch_size, batch_size)
+        # where result[row_i, col_j] = (S[col_j] >= S[row_i]).
+        R_mat = (S.unsqueeze(0) >= S.unsqueeze(1)).float()
+
+        # Ensure R_mat is on the same device as the other tensors (hazards, S, c)
+        device = hazards.device
+        R_mat = R_mat.to(device)
+
+        theta = (
+            hazards  # hazards should already be the log-risk scores, now confirmed 1D
         )
+        exp_theta = torch.exp(theta)
+
+        # Calculate the log sum over the risk set for each patient i: log(sum_{j in R_i} exp(theta_j))
+        # torch.sum(exp_theta * R_mat, dim=1) sums exp_theta_j for all j where R_mat[i,j] is 1 (i.e., j is in risk set of i)
+        log_risk_sum = torch.log(torch.sum(exp_theta * R_mat, dim=1))
+
+        # The Cox proportional hazards partial log-likelihood:
+        # L = - sum_{i: uncensored} (theta_i - log(sum_{j in R_i} exp(theta_j)))
+        # (1 - c) acts as a mask, making the term zero for censored observations.
+        loss_cox = -torch.mean((theta - log_risk_sum) * (1 - c))
         return loss_cox
