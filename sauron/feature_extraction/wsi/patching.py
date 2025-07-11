@@ -1,6 +1,3 @@
-# sauron/feature_extraction/wsi/patching.py
-# New file, adapted from trident/wsi_objects/WSIPatcher.py
-
 from __future__ import annotations
 
 import warnings
@@ -15,9 +12,6 @@ from shapely import Polygon
 from shapely.validation import (
     make_valid as shapely_make_valid,  # Corrected: Import shapely_make_valid
 )
-
-# Corrected: Import overlay_gdf_on_thumbnail from sauron.feature_extraction.utils.io
-from sauron.feature_extraction.utils.io import overlay_gdf_on_thumbnail
 
 # Prevent circular import if Base is not fully defined yet, for type hinting
 if TYPE_CHECKING:
@@ -473,13 +467,25 @@ class WSIPatcher:
                 exterior_coords = exterior_coords.astype(np.int32)
 
                 # Draw polygon
-                cv2.polylines(canvas_np, [exterior_coords], isClosed=True, color=(0, 255, 0), thickness=2)
+                cv2.polylines(
+                    canvas_np,
+                    [exterior_coords],
+                    isClosed=True,
+                    color=(0, 255, 0),
+                    thickness=2,
+                )
 
                 # Draw holes
                 for interior in geom.interiors:
                     interior_coords = np.array(interior.coords) * downsample_factor
                     interior_coords = interior_coords.astype(np.int32)
-                    cv2.polylines(canvas_np, [interior_coords], isClosed=True, color=(0, 255, 0), thickness=2)
+                    cv2.polylines(
+                        canvas_np,
+                        [interior_coords],
+                        isClosed=True,
+                        color=(0, 255, 0),
+                        thickness=2,
+                    )
 
         # Add informative text (optional)
         text_area_height = 130  # For text info area

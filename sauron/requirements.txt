@@ -32,13 +32,12 @@ matplotlib
 seaborn
 # wandb # Uncomment if using Weights & Biases
 
-# Needed by trident (if used for feature extraction prior to this codebase)
 openslide-python
 Pillow
 opencv-python-headless
 geopandas
 shapely
-pyvips # If using trident's Converter
+pyvips
 
 # Other potential dependencies based on imports observed
 opt_einsum # Used in S4MIL

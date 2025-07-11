@@ -60,7 +60,7 @@ def encoder_factory(
 slide_to_patch_encoder_name = {
     "threads": "conch_v15",
     "titan": "conch_v15",
-    "tcga": "conch_v15",  # Not explicit in trident models, but often used for TCGA data
+    "tcga": "conch_v15",
     "prism": "virchow",
     "chief": "ctranspath",
     "gigapath": "gigapath",
@@ -207,9 +207,9 @@ class ABMILSlideEncoder(BaseSlideEncoder):
 
         self.enc_name = "abmil"
 
-        assert (
-            pretrained is False
-        ), "ABMILSlideEncoder has no corresponding pretrained models. Please load with pretrained=False."
+        assert pretrained is False, (
+            "ABMILSlideEncoder has no corresponding pretrained models. Please load with pretrained=False."
+        )
 
         pre_attention_layers = nn.Sequential(
             nn.Linear(input_feature_dim, input_feature_dim), nn.GELU(), nn.Dropout(0.1)
@@ -486,7 +486,9 @@ class MadeleineSlideEncoder(BaseSlideEncoder):
         super().__init__(**build_kwargs)
 
     def _build(self, pretrained=True):
-        assert pretrained, "MadeleineSlideEncoder has no non-pretrained models. Please load with pretrained=True."
+        assert pretrained, (
+            "MadeleineSlideEncoder has no non-pretrained models. Please load with pretrained=True."
+        )
 
         self.enc_name = "madeleine"
         weights_path = self._get_weights_path()
@@ -549,7 +551,7 @@ class ThreadsSlideEncoder(BaseSlideEncoder):
         print("ThreadsSlideEncoder: Model definition is a placeholder (Coming Soon!)")
         model = torch.nn.Identity()  # Dummy model
         precision = torch.float16  # Default precision
-        embedding_dim = 768  # Expected embedding dimension based on paper/Trident
+        embedding_dim = 768
 
         return model, precision, embedding_dim
 
@@ -574,10 +576,10 @@ class TitanSlideEncoder(BaseSlideEncoder):
 
     def _build(self, pretrained=True):
         self.enc_name = "titan"
-        assert pretrained, "TitanSlideEncoder has no non-pretrained models. Please load with pretrained=True."
+        assert pretrained, (
+            "TitanSlideEncoder has no non-pretrained models. Please load with pretrained=True."
+        )
 
-        # Titan can be loaded from HuggingFace directly, no local path needed in Trident.
-        # If it needed a local path, _get_weights_path() would have handled it.
         try:
             from transformers import AutoModel  # type: ignore
 
@@ -632,7 +634,6 @@ class MeanSlideEncoder(BaseSlideEncoder):
         # The 'mean-' prefix will be stripped to get the patch encoder name.
         patch_encoder_name = model_name.replace("mean-", "")
 
-        # These dimensions are based on trident/patch_encoder_models/load.py
         if patch_encoder_name == "conch_v1":
             embedding_dim = 512
         elif patch_encoder_name == "conch_v15":

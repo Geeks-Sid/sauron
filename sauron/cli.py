@@ -1,6 +1,3 @@
-# sauron/cli.py
-import sys
-
 # Import the refactored main functions from their new locations
 from sauron.feature_extraction.cli_runner import run_feature_extraction_job
 
@@ -9,8 +6,7 @@ from sauron.parse.cli_parsers import (
     get_mil_args,
     parse_feature_extraction_arguments,
 )
-
-# from sauron.training.cli_runner import run_mil_training_job
+from sauron.training.cli_runner import run_mil_training_job
 
 
 def feature_extract_main():
@@ -24,22 +20,22 @@ def feature_extract_main():
     print("Sauron Feature Extraction job completed.")
 
 
-# def train_mil_main():
-#     """
-#     Entry point for the 'sauron-train' command.
-#     Parses arguments and runs the MIL training pipeline.
-#     """
-#     args = get_mil_args()
-#     # The `train_mil.py` script included some argument compatibility logic,
-#     # replicate it here if `get_mil_args` doesn't fully handle it.
-#     if not hasattr(args, "task_name"):
-#         args.task_name = args.task
-#     if not hasattr(args, "k_fold"):
-#         args.k_fold = args.k
+def train_mil_main():
+    """
+    Entry point for the 'sauron-train' command.
+    Parses arguments and runs the MIL training pipeline.
+    """
+    args = get_mil_args()
+    # The `train_mil.py` script included some argument compatibility logic,
+    # replicate it here if `get_mil_args` doesn't fully handle it.
+    if not hasattr(args, "task_name"):
+        args.task_name = args.task
+    if not hasattr(args, "k_fold"):
+        args.k_fold = args.k
 
-#     print(f"Launching Sauron MIL Training with arguments: {args}")
-#     run_mil_training_job(args)
-#     print("Sauron MIL Training job completed.")
+    print(f"Launching Sauron MIL Training with arguments: {args}")
+    run_mil_training_job(args)
+    print("Sauron MIL Training job completed.")
 
 
 if __name__ == "__main__":

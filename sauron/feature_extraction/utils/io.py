@@ -866,9 +866,6 @@ def fix_invalid_polygon(polygon: Polygon) -> Polygon:
         if isinstance(new_polygon, Polygon) and new_polygon.is_valid:
             return new_polygon
 
-    # If shapely_make_valid fails or returns a MultiPolygon/GeometryCollection, try buffering
-    # (buffering with 0 can sometimes fix geometry issues)
-    # The original trident code also tried +/- 0.1, 0.2
     for i in [0, 0.1, -0.1, 0.2]:
         new_polygon = polygon.buffer(i)
         if isinstance(new_polygon, Polygon) and new_polygon.is_valid:

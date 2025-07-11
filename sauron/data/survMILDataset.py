@@ -7,13 +7,12 @@ import h5py  # For potential H5 feature loading
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.model_selection import train_test_split  # Using this for simple splits
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset
 
 # Assuming generate_split and nth are from utils.utils as in original
 # If these are complex, they might need to be part of this class or simplified
-from sauron.utils.utils import (  # Placeholder if this path is correct
+from sauron.utils.generic_utils import (  # Placeholder if this path is correct
     generate_split,
     nth,
 )

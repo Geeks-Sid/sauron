@@ -2,8 +2,8 @@ import os
 from typing import Any, Dict, Optional, Union
 
 # Assuming your new dataset classes are in these locations
-from sauron.data.classMILDataset import ClassificationDataManager, WSIMILDataset
-from sauron.data.survMILDataset import SurvivalDataManager, SurvivalMILDataset
+from sauron.data.classMILDataset import ClassificationDataManager
+from sauron.data.survMILDataset import SurvivalDataManager
 
 # Keep supported tasks as in your original, or manage elsewhere
 SUPPORTED_TASKS = ["TGCT", "BRCA", "COAD", "UCEC", "LUAD"]

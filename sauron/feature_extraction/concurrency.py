@@ -1,5 +1,3 @@
-# This file is new, adapted from trident/Concurrency.py
-
 import gc
 import os
 import shutil

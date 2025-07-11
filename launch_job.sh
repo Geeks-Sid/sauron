@@ -12,8 +12,8 @@ set -euo pipefail
 # No need for PYTHON_SCRIPT anymore, as we call the installed command.
 
 # Directories and Paths
-JOB_DIR="/media/mydrive/TCGA/dummy-tcga-brca/job_dir"
-WSI_DIR="/media/mydrive/TCGA/dummy-tcga-brca/"
+JOB_DIR="/media/mydrive/TCGA/TCGA-BRCA-features"
+WSI_DIR="/media/mydrive/TCGA/TCGA-BRCA-FLAT/"
 WSI_CACHE="" # Set to "" to disable WSI caching
 
 # GPU & Task

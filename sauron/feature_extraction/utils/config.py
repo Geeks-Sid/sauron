@@ -1,15 +1,11 @@
-# sauron/feature_extraction/utils/config.py
-# Updated file, aligned with trident/utils/config.py
-
 import json
 import logging
 import os
-import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypeAlias
 
 import numpy as np
-import torch  # For handling torch types in JSONsaver
+import torch
 
 # Type Aliases
 PathLike: TypeAlias = str | os.PathLike | Path

@@ -4,7 +4,6 @@ import argparse
 def build_feature_extraction_parser():
     """
     Parse command-line arguments for the Sauron feature extraction script.
-    Adapted from trident's `run_batch_of_slides.py` parser.
     """
     parser = argparse.ArgumentParser(
         description="Run Sauron Whole Slide Image Processing"

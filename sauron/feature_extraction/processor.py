@@ -1,6 +1,3 @@
-# sauron/feature_extraction/processor.py
-# Updated file, integrating logic from trident/Processor.py
-
 from __future__ import annotations
 
 import json
@@ -287,7 +284,6 @@ class Processor:
                 create_lock(cache_file_path)
                 update_log(cache_log_path, slide_fullname, "LOCK - Copying")
                 shutil.copy2(source_file_path, cache_file_path)
-                # Handle .mrxs subdirectories if they exist (trident's Concurrency.py)
                 if source_file_path.lower().endswith(".mrxs"):
                     mrxs_dir = os.path.splitext(source_file_path)[0]
                     if os.path.exists(mrxs_dir) and os.path.isdir(mrxs_dir):

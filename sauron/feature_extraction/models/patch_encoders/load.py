@@ -402,9 +402,9 @@ class CTransPathInferenceEncoder(BasePatchEncoder):
             key: val for key, val in state_dict.items() if "attn_mask" not in key
         }
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        assert (
-            len(unexpected) == 0
-        ), f"Unexpected keys found in state dict: {unexpected}"
+        assert len(unexpected) == 0, (
+            f"Unexpected keys found in state dict: {unexpected}"
+        )
         assert missing == [
             "layers.0.blocks.1.attn_mask",
             "layers.1.blocks.1.attn_mask",
@@ -949,9 +949,6 @@ class GigaPathInferenceEncoder(BasePatchEncoder):
         self,
     ):
         import timm
-
-        # NOTE: Original trident code hardcoded timm==0.9.16. Consider if this is still a strict requirement or a warning.
-        # assert timm.__version__ == '0.9.16', f"Gigapath requires timm version 0.9.16, but found {timm.__version__}. Please install the correct version using `pip install timm==0.9.16`"
         from torchvision import transforms
 
         self.enc_name = "gigapath"
@@ -1188,9 +1185,6 @@ class HOptimus0InferenceEncoder(BasePatchEncoder):
 
     def _build(self, timm_kwargs={"init_values": 1e-5, "dynamic_img_size": False}):
         import timm
-
-        # NOTE: Original trident code hardcoded timm==0.9.16. Consider if this is still a strict requirement or a warning.
-        # assert timm.__version__ == '0.9.16', f"H-Optimus requires timm version 0.9.16, but found {timm.__version__}. Please install the correct version using `pip install timm==0.9.16`"
         from torchvision import transforms
 
         self.enc_name = "hoptimus0"
@@ -1257,9 +1251,6 @@ class HOptimus1InferenceEncoder(BasePatchEncoder):
         self, timm_kwargs={"init_values": 1e-5, "dynamic_img_size": False}, **kwargs
     ):
         import timm
-
-        # NOTE: Original trident code hardcoded timm==0.9.16. Consider if this is still a strict requirement or a warning.
-        # assert timm.__version__ == '0.9.16', f"H-Optimus requires timm version 0.9.16, but found {timm.__version__}. Please install the correct version using `pip install timm==0.9.16`"
         from torchvision import transforms
 
         self.enc_name = "hoptimus1"
