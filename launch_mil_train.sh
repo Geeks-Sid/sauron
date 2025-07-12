@@ -1,5 +1,5 @@
 #!/bin/bash
-# This script launches the Sauron MIL training job.
+# This script launches the aegis MIL training job.
 
 set -euo pipefail
 
@@ -78,20 +78,20 @@ if [ "$TASK_TYPE" = "survival" ]; then
 fi
 
 echo "========================================================================"
-echo "Starting Sauron MIL Training Job"
+echo "Starting aegis MIL Training Job"
 echo "Experiment Code: $EXP_CODE"
 echo "Task: $TASK_NAME ($TASK_TYPE)"
 echo "Model: $MODEL_TYPE"
 echo "Backbone: $BACKBONE"
 echo "------------------------------------------------------------------------"
 echo "Full command:"
-echo "sauron-train ${ARGS[@]}"
+echo "aegis-train ${ARGS[@]}"
 echo "========================================================================"
 
 # Run the training command
 # Ensure you have installed your package with `pip install -e .`
-# so that `sauron-train` is available in your environment.
-sauron-train "${ARGS[@]}"
+# so that `aegis-train` is available in your environment.
+aegis-train "${ARGS[@]}"
 
 echo "------------------------------------------------------------------------"
-echo "Sauron MIL Training job completed."
+echo "aegis MIL Training job completed."

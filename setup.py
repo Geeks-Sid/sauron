@@ -5,9 +5,9 @@ import re
 import setuptools
 
 # --- Package Metadata ---
-NAME = "sauron"
+NAME = "aegis"
 DESCRIPTION = "A comprehensive deep learning framework for Whole Slide Image analysis, including feature extraction and MIL training."
-URL = "https://github.com/iucomppath/sauron"  # Replace with your project's GitHub URL
+URL = "https://github.com/iucomppath/aegis"  # Replace with your project's GitHub URL
 AUTHOR = "Siddhesh Thakur"  # Replace with your name
 AUTHOR_EMAIL = "sid.cre8er@gmail.com"  # Replace with your email
 LICENSE = (
@@ -16,9 +16,9 @@ LICENSE = (
 
 
 # --- Version Management ---
-# Load the version from sauron/__init__.py
+# Load the version from aegis/__init__.py
 def get_version():
-    """Reads the version from sauron/__init__.py without importing the package."""
+    """Reads the version from aegis/__init__.py without importing the package."""
     version_file = os.path.join(os.path.dirname(__file__), NAME, "__init__.py")
     with open(version_file, "r", encoding="utf-8") as f:
         version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]", f.read(), re.M)
@@ -61,7 +61,7 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url=URL,
     license=LICENSE,
-    # Automatically find all packages under the 'sauron' directory
+    # Automatically find all packages under the 'aegis' directory
     packages=setuptools.find_packages(
         exclude=["tests*", "docs*"]
     ),  # Exclude test/doc directories
@@ -72,9 +72,9 @@ setuptools.setup(
     # Define command-line entry points
     entry_points={
         "console_scripts": [
-            # These now point to the functions within sauron/cli.py
-            "sauron-extract = sauron.cli:feature_extract_main",
-            "sauron-train = sauron.cli:train_mil_main",
+            # These now point to the functions within aegis/cli.py
+            "aegis-extract = aegis.cli:feature_extract_main",
+            "aegis-train = aegis.cli:train_mil_main",
         ],
     },
     # Classifiers help users find your project on PyPI and understand its compatibility.

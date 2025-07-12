@@ -1,3 +1,4 @@
+# aegis/training/cli_runner.py (This replaces your root train_mil.py script)
 import argparse
 import json
 import os
@@ -5,8 +6,11 @@ import os
 import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
 
+# Relative imports within the aegis package
 from aegis.data.dataset_factory import determine_split_directory, get_data_manager
-from aegis.parse.cli_parsers import get_args
+
+# IMPORTANT: Ensure aegis/parse/argparse.py is renamed to aegis/parse/cli_parsers.py
+from aegis.parse.cli_parsers import get_mil_args
 from aegis.training.pipeline import train_fold
 from aegis.utils.environment_setup import (
     create_results_directory,
@@ -14,14 +18,14 @@ from aegis.utils.environment_setup import (
     seed_everything,
     setup_device,
 )
-from aegis.utils.generic_utils import (
+from aegis.utils.generic_utils import (  # Assuming these are general utils
     log_results,
     save_pkl,
 )
 
 
 def run_experiment_folds(
-    data_manager,
+    data_manager,  # Now takes a DataManager instance
     args: argparse.Namespace,
     experiment_main_results_dir: str,
 ) -> pd.DataFrame:
@@ -34,37 +38,42 @@ def run_experiment_folds(
             "val_auc",
             "test_acc",
             "val_acc",
-        ]
+        ]  # Expected from train_fold
     elif args.task_type.lower() == "survival":
         metric_keys = [
             "test_c_index",
             "val_c_index",
-        ]
+        ]  # Example, ensure train_fold returns these
     else:
         raise ValueError(f"Unknown task_type: {args.task_type} for defining metrics.")
 
     all_fold_metrics = {key: [] for key in metric_keys}
 
+    # DataManager creates and manages its own splits internally
+    # For ClassificationDataManager:
     if args.task_type.lower() == "classification":
         data_manager.create_k_fold_splits(
             num_folds=args.k, test_set_size=getattr(args, "test_frac", 0.1)
         )
         num_actual_folds = data_manager.get_number_of_folds()
-        if num_actual_folds == 0 and args.k > 0:
+        if num_actual_folds == 0 and args.k > 0:  # No k-folds, but test set might exist
             print(
                 "No K-folds generated (num_folds=0 in DataManager), running as single train/test split if test_frac > 0."
             )
-            if args.k <= 1:
-                loop_range = range(1)
+            # In this case, loop runs once if test_set_size > 0, setting fold_idx=0
+            if args.k <= 1:  # Consider 0 or 1 fold as a single run (train/val/test)
+                loop_range = range(1)  # Run once for the main split
                 print(f"Running a single train/val/test split (args.k={args.k}).")
-            else:
+            else:  # k > 1 but num_actual_folds is 0 - this is an issue
                 raise ValueError(
                     f"args.k={args.k} but DataManager created 0 folds. Check data or split logic."
                 )
         else:
             loop_range = range(args.k_start, min(args.k_end, num_actual_folds))
 
+    # For SurvivalDataManager:
     elif args.task_type.lower() == "survival":
+        # Create splits using the survival-specific function
         data_manager.create_splits_from_generating_function(
             k=args.k,
             val_num=getattr(args, "val_num_survival", (0.15, 0.15)),
@@ -79,6 +88,7 @@ def run_experiment_folds(
     for i in loop_range:
         print(f"\n{'=' * 10} Processing Fold: {i} {'=' * 10}")
 
+        # Set the current fold in the DataManager
         if args.task_type.lower() == "classification":
             data_manager.set_current_fold(fold_index=i)
         elif args.task_type.lower() == "survival":
@@ -90,6 +100,8 @@ def run_experiment_folds(
                 )
                 break
 
+        # Get MILDataset instances for the current fold
+        # Common MILDataset parameters from args
         mil_dataset_params = {
             "backbone": args.backbone,
             "patch_size": args.patch_size,
@@ -97,6 +109,7 @@ def run_experiment_folds(
             "cache_enabled": getattr(args, "preloading", "no").lower() == "yes",
         }
 
+        # Add survival-specific parameters if needed
         if args.task_type.lower() == "survival":
             mil_dataset_params["mode"] = getattr(args, "survival_mode", "pathomic")
 
@@ -104,6 +117,7 @@ def run_experiment_folds(
             **mil_dataset_params
         )
 
+        # Preload data if requested
         if getattr(args, "preloading", "no").lower() == "yes":
             print(f"Preloading data for fold {i}...")
             if train_dataset:
@@ -113,18 +127,21 @@ def run_experiment_folds(
             if test_dataset:
                 test_dataset.preload_data()
 
+        # Save current split patient IDs if requested
         if getattr(args, "save_splits", False):
             split_file = os.path.join(
                 args.split_dir_determined, f"fold_{i}_patient_ids.csv"
             )
             data_manager.save_current_split_patient_ids(split_file)
 
+        # Get fold-specific results directory
         fold_results_dir = os.path.join(experiment_main_results_dir, f"fold_{i}")
         os.makedirs(fold_results_dir, exist_ok=True)
 
+        # Train the model for this fold
         fold_results_tuple = train_fold(
             train_dataset=train_dataset,
-            val_dataset=val_dataset,
+            val_dataset=val_dataset,  # Add val_dataset if train_fold expects it
             test_dataset=test_dataset,
             cur_fold_num=i,
             args=args,
@@ -152,6 +169,7 @@ def run_experiment_folds(
                 f"Saved patient-level results for fold {i} to {fold_results_pkl_path}"
             )
 
+    # Check if any folds were actually run
     num_folds_run = (
         len(all_fold_metrics[metric_keys[0]])
         if metric_keys and all_fold_metrics[metric_keys[0]]
@@ -165,9 +183,9 @@ def run_experiment_folds(
     return pd.DataFrame({"fold_num": fold_num_series, **all_fold_metrics})
 
 
-def main_experiment_runner(args: argparse.Namespace):
+def run_mil_training_job(args: argparse.Namespace):  # Renamed `main_experiment_runner`
     """
-    Main function to run the entire experiment.
+    Main function to run the entire MIL training experiment.
     """
     _ = setup_device()
     seed_everything(args.seed)
@@ -175,14 +193,18 @@ def main_experiment_runner(args: argparse.Namespace):
     experiment_main_results_dir = create_results_directory(
         args.results_dir, args.exp_code, args.seed
     )
-    args.results_dir = experiment_main_results_dir
+    args.results_dir = experiment_main_results_dir  # Update args for train_fold
     log_experiment_details(args, experiment_main_results_dir)
 
-    args.split_dir_determined = determine_split_directory(
-        getattr(args, "split_dir_base", None),
+    # Determine split directory (where DataManager might save split definitions if asked)
+    # This is more for organizing outputs than for DataManager to read from, unless you implement that.
+    args.split_dir_determined = determine_split_directory(  # Store in a new arg field
+        getattr(
+            args, "split_dir_base", None
+        ),  # Base for auto-generated split dir names
         args.task_name,
         getattr(args, "label_frac", 1.0),
-        args.k > 1,
+        args.k > 1,  # k_fold is true if num_folds > 1
     )
     os.makedirs(args.split_dir_determined, exist_ok=True)
 
@@ -190,9 +212,11 @@ def main_experiment_runner(args: argparse.Namespace):
         log_dir=os.path.join(experiment_main_results_dir, "summary_all_folds")
     ) as summary_writer:
         args.k_start = max(0, args.k_start)
+        # args.k_end should be such that loop runs for args.k folds, or up to actual num_folds
+        # If args.k is the total number of folds intended:
         args.k_end = args.k if args.k_end == -1 or args.k_end > args.k else args.k_end
 
-        if args.k_start >= args.k_end and args.k > 0:
+        if args.k_start >= args.k_end and args.k > 0:  # k_end is exclusive
             print(
                 f"Warning: k_start ({args.k_start}) is >= k_end ({args.k_end}). No folds will be run."
             )
@@ -201,10 +225,13 @@ def main_experiment_runner(args: argparse.Namespace):
         manager_params = {
             "task_name": args.task_name,
             "task_type": args.task_type,
-            "csv_path": args.dataset_csv,
+            "csv_path": getattr(
+                args, "dataset_csv", None
+            ),  # Added check for dataset_csv
             "data_directory": args.data_root_dir,
             "seed": args.seed,
             "verbose": getattr(args, "verbose_data", True),
+            # Classification specific from args
             "label_column": getattr(args, "label_col", "label"),
             "patient_id_col_name": getattr(args, "patient_id_col", "case_id"),
             "slide_id_col_name": getattr(args, "slide_id_col", "slide_id"),
@@ -217,20 +244,27 @@ def main_experiment_runner(args: argparse.Namespace):
             "patient_label_aggregation": getattr(
                 args, "patient_label_aggregation", "max"
             ),
-            "shuffle": getattr(args, "shuffle_data", False),
+            "shuffle": getattr(
+                args, "shuffle_data", False
+            ),  # For ClassificationDataManager initial load
+            # Survival specific from args
             "time_column": getattr(args, "time_col", None),
             "event_column": getattr(args, "event_col", None),
             "n_bins": getattr(args, "n_bins_survival", 4),
-            "filter_dict": json.loads(args.filter_dict_survival)
-            if hasattr(args, "filter_dict_survival") and args.filter_dict_survival
+            "filter_dict": json.loads(getattr(args, "filter_dict_survival", "null"))
+            if hasattr(args, "filter_dict_survival")
+            and getattr(args, "filter_dict_survival", "null") != "null"
             else None,
             "omic_csv_path": getattr(args, "omic_csv", None),
             "omic_patient_id_col": getattr(args, "omic_patient_id_col", "case_id"),
             "apply_sig": getattr(args, "apply_sig_survival", False),
             "signatures_csv_path": getattr(args, "signatures_csv", None),
-            "shuffle_slide_data": getattr(args, "shuffle_data_survival", False),
+            "shuffle_slide_data": getattr(
+                args, "shuffle_slide_data_survival", False
+            ),  # For SurvivalDataManager
         }
 
+        # Parse label_mapping if provided as a JSON string
         label_mapping_str = getattr(args, "label_mapping", None)
         if label_mapping_str:
             try:
@@ -244,6 +278,7 @@ def main_experiment_runner(args: argparse.Namespace):
 
         data_manager_instance = get_data_manager(**manager_params)
 
+        # Get n_classes from DataManager and set it in args for train_fold
         args.n_classes = data_manager_instance.num_classes
         print(f"DataManager initialized. Number of classes: {args.n_classes}")
         if args.n_classes == 0 and args.task_type.lower() == "classification":
@@ -267,12 +302,13 @@ def main_experiment_runner(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    args = get_args()  # Parse arguments
-
+    # This block is for direct execution during development/testing outside of package
+    # For package usage, `aegis.cli:train_mil_main` will be called.
+    args = get_mil_args()
+    # Potentially add more argument validation or default setting here if needed
     if not hasattr(args, "task_name"):
         args.task_name = args.task
     if not hasattr(args, "k_fold"):
         args.k_fold = args.k
-
-    main_experiment_runner(args)
+    run_mil_training_job(args)
     print("Experiment Finished!")

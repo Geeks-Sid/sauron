@@ -1,5 +1,5 @@
 #!/bin/bash
-# This script launches the Sauron feature extraction job.
+# This script launches the aegis feature extraction job.
 
 # Exit immediately if a command exits with a non-zero status.
 # Treat unset variables as an error.
@@ -28,7 +28,7 @@ READER_TYPE=""           # Force WSI reader: openslide, image, cucim. Leave empt
 SEARCH_NESTED="false"    # Set to "true" to recursively search WSI_DIR subdirectories
 
 # Parallelization & Batching
-MAX_WORKERS="16"          # Maximum number of workers. Set to "" for inferred (based on CPU cores).
+MAX_WORKERS="32"          # Maximum number of workers. Set to "" for inferred (based on CPU cores).
 BATCH_SIZE="64"          # General batch size. Can be overridden by seg_batch_size/feat_batch_size.
 
 # Caching Options
@@ -39,11 +39,11 @@ CACHE_BATCH_SIZE="32"    # Max number of slides to cache locally at once when --
 SKIP_ERRORS="false"      # Set to "true" to skip errored slides and continue processing.
 
 # Segmentation Arguments
-SEGMENTER="hest"         # hest, grandqc
-SEG_CONF_THRESH="0.5"    # Confidence threshold for segmentation.
-REMOVE_HOLES="false"     # Set to "true" to remove holes from segmentation mask.
-REMOVE_ARTIFACTS="false" # Set to "true" to remove artifacts using GrandQC.
-REMOVE_PENMARKS="false"  # Set to "true" to remove penmarks specifically (if REMOVE_ARTIFACTS is false).
+SEGMENTER="grandqc"         # hest, grandqc
+SEG_CONF_THRESH="0.4"    # Confidence threshold for segmentation.
+REMOVE_HOLES="true"     # Set to "true" to remove holes from segmentation mask.
+REMOVE_ARTIFACTS="true" # Set to "true" to remove artifacts using GrandQC.
+REMOVE_PENMARKS="true"  # Set to "true" to remove penmarks specifically (if REMOVE_ARTIFACTS is false).
 SEG_BATCH_SIZE=""        # Batch size for segmentation. Set to "" to use BATCH_SIZE.
 
 # Patching Arguments
@@ -107,16 +107,16 @@ ARGS+=(
 # Set the CUDA_VISIBLE_DEVICES environment variable
 export CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES"
 
-echo "Starting Sauron feature extraction job via installed command..."
+echo "Starting aegis feature extraction job via installed command..."
 echo "Using GPU(s): $CUDA_VISIBLE_DEVICES"
 echo "Job Directory: $JOB_DIR"
 echo "WSI Directory: $WSI_DIR"
 echo "Full command being executed:"
-echo "sauron-extract ${ARGS[@]}"
+echo "aegis-extract ${ARGS[@]}"
 echo "--------------------------------------------------"
 
-# Execute the installed Sauron command with the constructed arguments
-sauron-extract "${ARGS[@]}"
+# Execute the installed aegis command with the constructed arguments
+aegis-extract "${ARGS[@]}"
 
 echo "--------------------------------------------------"
-echo "Sauron Feature Extraction job completed."
+echo "aegis Feature Extraction job completed."
