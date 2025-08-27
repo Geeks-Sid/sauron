@@ -12,13 +12,13 @@ set -euo pipefail
 # No need for PYTHON_SCRIPT anymore, as we call the installed command.
 
 # Directories and Paths
-JOB_DIR="/media/mydrive/TCGA/TCGA-BRCA-features"
+JOB_DIR="/media/mydrive/TCGA/TCGA-BRCA-features-seg/"
 WSI_DIR="/media/mydrive/TCGA/TCGA-BRCA-FLAT/"
 WSI_CACHE="" # Set to "" to disable WSI caching
 
 # GPU & Task
 CUDA_VISIBLE_DEVICES="0" # GPU ID(s) to use, e.g., "0" or "0,1"
-TASK="all"               # seg, coords, feat, all, cache
+TASK="seg"               # seg, coords, feat, all, cache
 
 # WSI Discovery and Reader
 WSI_EXT=".svs"            # Space-separated list for multiple extensions: "svs tif ndpi"
@@ -39,16 +39,16 @@ CACHE_BATCH_SIZE="32"    # Max number of slides to cache locally at once when --
 SKIP_ERRORS="false"      # Set to "true" to skip errored slides and continue processing.
 
 # Segmentation Arguments
-SEGMENTER="grandqc"         # hest, grandqc
-SEG_CONF_THRESH="0.4"    # Confidence threshold for segmentation.
-REMOVE_HOLES="true"     # Set to "true" to remove holes from segmentation mask.
-REMOVE_ARTIFACTS="true" # Set to "true" to remove artifacts using GrandQC.
-REMOVE_PENMARKS="true"  # Set to "true" to remove penmarks specifically (if REMOVE_ARTIFACTS is false).
+SEGMENTER="clam"         # hest, grandqc
+SEG_CONF_THRESH="0.5"    # Confidence threshold for segmentation.   
+REMOVE_HOLES="false"     # Set to "true" to remove holes from segmentation mask.
+REMOVE_ARTIFACTS="false" # Set to "true" to remove artifacts using GrandQC.
+REMOVE_PENMARKS="false"  # Set to "true" to remove penmarks specifically (if REMOVE_ARTIFACTS is false).
 SEG_BATCH_SIZE=""        # Batch size for segmentation. Set to "" to use BATCH_SIZE.
 
 # Patching Arguments
 MAG="20"                 # Magnification level for patching (e.g., 20 for 20x).
-PATCH_SIZE="512"         # Side length of square patches in pixels.
+PATCH_SIZE="256"         # Side length of square patches in pixels.
 OVERLAP="0"              # Absolute overlap between adjacent patches in pixels.
 MIN_TISSUE_PROPORTION="0.0" # Minimum proportion of patch area that must contain tissue.
 COORDS_DIR_NAME=""       # Name of directory to save/restore coordinates. Set to "" for auto-generated.
@@ -69,12 +69,14 @@ ARGS+=(
     "--task" "$TASK"
     "--batch_size" "$BATCH_SIZE"
     "--mag" "$MAG"
-    "--patch_size" "$PATCH_SIZE"
-    "--overlap" "$OVERLAP"
     "--min_tissue_proportion" "$MIN_TISSUE_PROPORTION"
     "--patch_encoder" "$PATCH_ENCODER"
     "--segmenter" "$SEGMENTER"
 )
+
+if [ "$SEGMENTER" != "clam" ]; then
+    ARGS+=("--patch_size" "$PATCH_SIZE" "--overlap" "$OVERLAP")
+fi
 
 # Optional arguments (only add if their value is not empty or if boolean "true")
 [ -n "$WSI_EXT" ] && ARGS+=("--wsi_ext" $WSI_EXT) # No quotes for $WSI_EXT here to allow shell word splitting for nargs

@@ -395,102 +395,113 @@ class WSI:
         segmentation_model.to(device)
         segmentation_model.eval()
 
-        # Get patch iterator for the segmentation model's target input resolution
-        # Assumes segmentation_model.input_size and segmentation_model.target_mag are available
-        destination_mpp = (
-            10 / segmentation_model.target_mag
-        )  # MPP at model's target magnification
+        # Special handling for classic segmenters like CLAM that operate on whole images
+        if type(segmentation_model).__name__.lower() in ["clamsegmenter", "classicsegmenter"]:
+            from torchvision import transforms
 
-        # Ensure self.mpp is available
-        if self.mpp is None:
-            raise ValueError(
-                f"WSI {self.name} does not have MPP information. Cannot segment without it."
+            # These models expect a single downsampled image.
+            # We'll create a thumbnail at a specific magnification suitable for them.
+            seg_mag = 1.25  # A low magnification like 1.25x is typical for classic methods
+            seg_mpp = 10 / seg_mag
+            mpp_reduction_factor = self.mpp / seg_mpp
+
+            thumb_w = int(self.width / (self.mpp / seg_mpp))
+            thumb_h = int(self.height / (self.mpp / seg_mpp))
+
+            image_for_seg = self.get_thumbnail((thumb_w, thumb_h))
+            image_np = np.array(image_for_seg)
+
+            # The ClamSegmenter's forward method expects a tensor
+            img_tensor = transforms.ToTensor()(image_np).unsqueeze(0).to(device)
+
+            # The forward pass returns a binary mask tensor
+            binary_mask_tensor = segmentation_model(img_tensor)
+
+            # Convert to numpy, remove batch dim, and scale to 255 for contour finding
+            binary_mask_for_contours = (
+                binary_mask_tensor.squeeze(0).cpu().numpy().astype(np.uint8) * 255
             )
 
-        # Create patcher for segmentation
-        # Patches are read at segmentation_model.target_mag, resized to segmentation_model.input_size
-        patcher = self.create_patcher(
-            patch_size=segmentation_model.input_size,
-            src_pixel_size=self.mpp,  # WSI's base MPP
-            dst_pixel_size=destination_mpp,  # Target MPP for input patches to model
-            mask=None,  # No mask applied during segmentation (segment whole image)
-            min_tissue_proportion=0.0,  # All patches are considered for segmentation
-            pil=True,  # Model expects PIL images which are converted to tensor by transforms
-        )
+        else:
+            # Get patch iterator for the segmentation model's target input resolution
+            destination_mpp = (
+                10 / segmentation_model.target_mag
+            )  # MPP at model's target magnification
 
-        precision = segmentation_model.precision
-        eval_transforms = segmentation_model.eval_transforms
-        dataset = WSIPatcherDataset(patcher, eval_transforms)
-        # Use get_num_workers from utils.io
-        dataloader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            num_workers=get_num_workers(batch_size, max_workers=self.max_workers),
-            pin_memory=True,
-        )
+            if self.mpp is None:
+                raise ValueError(
+                    f"WSI {self.name} does not have MPP information. Cannot segment without it."
+                )
 
-        # Calculate mask dimensions at segmentation target magnification
-        mpp_reduction_factor = self.mpp / destination_mpp
-        mask_width_at_target_mpp, mask_height_at_target_mpp = (
-            int(round(self.width * mpp_reduction_factor)),
-            int(round(self.height * mpp_reduction_factor)),
-        )
-
-        # Initialize an empty mask to stitch predictions
-        stitched_mask = np.zeros(
-            (mask_height_at_target_mpp, mask_width_at_target_mpp), dtype=np.uint8
-        )
-
-        dataloader = tqdm(
-            dataloader, desc=f"Segmenting {self.name}", disable=not verbose
-        )
-
-        for imgs, (xcoords_level0, ycoords_level0) in dataloader:
-            imgs = imgs.to(device, dtype=precision)  # Move to device and match dtype
-
-            with torch.autocast(
-                device_type=device.split(":")[0],
-                dtype=precision,
-                enabled=(precision != torch.float32),
-            ):
-                preds = (
-                    segmentation_model(imgs).cpu().numpy()
-                )  # Raw predictions from model
-
-            # Convert level 0 coords to coords at segmentation target MPP
-            x_starts_target_mpp = np.clip(
-                np.round(xcoords_level0.numpy() * mpp_reduction_factor).astype(int),
-                0,
-                mask_width_at_target_mpp - 1,
-            )
-            y_starts_target_mpp = np.clip(
-                np.round(ycoords_level0.numpy() * mpp_reduction_factor).astype(int),
-                0,
-                mask_height_at_target_mpp - 1,
+            # Create patcher for segmentation
+            patcher = self.create_patcher(
+                patch_size=segmentation_model.input_size,
+                src_pixel_size=self.mpp,
+                dst_pixel_size=destination_mpp,
+                mask=None,
+                min_tissue_proportion=0.0,
+                pil=True,
             )
 
-            patch_input_size = (
-                segmentation_model.input_size
-            )  # Size of input patches to the model (e.g. 512)
+            precision = segmentation_model.precision
+            eval_transforms = segmentation_model.eval_transforms
+            dataset = WSIPatcherDataset(patcher, eval_transforms)
+            dataloader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                num_workers=get_num_workers(batch_size, max_workers=self.max_workers),
+                pin_memory=True,
+            )
 
-            for i in range(len(preds)):
-                x_start, y_start = x_starts_target_mpp[i], y_starts_target_mpp[i]
+            mpp_reduction_factor = self.mpp / destination_mpp
+            mask_width_at_target_mpp, mask_height_at_target_mpp = (
+                int(round(self.width * mpp_reduction_factor)),
+                int(round(self.height * mpp_reduction_factor)),
+            )
 
-                # Calculate end coordinates, clipping to mask boundaries
-                x_end = min(x_start + patch_input_size, mask_width_at_target_mpp)
-                y_end = min(y_start + patch_input_size, mask_height_at_target_mpp)
+            stitched_mask = np.zeros(
+                (mask_height_at_target_mpp, mask_width_at_target_mpp), dtype=np.uint8
+            )
 
-                if (
-                    x_start >= x_end or y_start >= y_end
-                ):  # Invalid patch after clipping, skip
-                    continue
+            dataloader = tqdm(
+                dataloader, desc=f"Segmenting {self.name}", disable=not verbose
+            )
 
-                # Ensure patch_pred matches the actual clipped size for slicing
-                patch_pred = preds[i][: y_end - y_start, : x_end - x_start]
-                stitched_mask[y_start:y_end, x_start:x_end] += patch_pred
+            for imgs, (xcoords_level0, ycoords_level0) in dataloader:
+                imgs = imgs.to(device, dtype=precision)
 
-        # Post-process the stitched mask: binarize (anything > 0 is tissue) and convert to 255 for contours
-        binary_mask_for_contours = (stitched_mask > 0).astype(np.uint8) * 255
+                with torch.autocast(
+                    device_type=device.split(":")[0],
+                    dtype=precision,
+                    enabled=(precision != torch.float32),
+                ):
+                    preds = segmentation_model(imgs).cpu().numpy()
+
+                x_starts_target_mpp = np.clip(
+                    np.round(xcoords_level0.numpy() * mpp_reduction_factor).astype(int),
+                    0,
+                    mask_width_at_target_mpp - 1,
+                )
+                y_starts_target_mpp = np.clip(
+                    np.round(ycoords_level0.numpy() * mpp_reduction_factor).astype(int),
+                    0,
+                    mask_height_at_target_mpp - 1,
+                )
+
+                patch_input_size = segmentation_model.input_size
+
+                for i in range(len(preds)):
+                    x_start, y_start = x_starts_target_mpp[i], y_starts_target_mpp[i]
+                    x_end = min(x_start + patch_input_size, mask_width_at_target_mpp)
+                    y_end = min(y_start + patch_input_size, mask_height_at_target_mpp)
+
+                    if x_start >= x_end or y_start >= y_end:
+                        continue
+
+                    patch_pred = preds[i][: y_end - y_start, : x_end - x_start]
+                    stitched_mask[y_start:y_end, x_start:x_end] += patch_pred
+            
+            binary_mask_for_contours = (stitched_mask > 0).astype(np.uint8) * 255
 
         # Define save paths
         thumbnail_saveto = os.path.join(job_dir, "thumbnails", f"{self.name}.jpg")

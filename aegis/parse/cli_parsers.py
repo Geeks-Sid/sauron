@@ -113,7 +113,7 @@ def build_feature_extraction_parser():
         "--segmenter",
         type=str,
         default="hest",
-        choices=["hest", "grandqc"],
+        choices=["hest", "grandqc", "classic", "clam"],
         help="Type of tissue vs background segmenter model to use. Options are HEST or GrandQC.",
     )
     parser.add_argument(
