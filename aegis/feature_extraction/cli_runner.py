@@ -8,7 +8,7 @@ from threading import Thread
 
 import torch
 
-from aegis.feature_extraction.concurrency import batch_consumer, batch_producer
+from aegis.feature_extraction.batch_processing import batch_consumer, batch_producer
 from aegis.feature_extraction.models.patch_encoders.factory import (
     encoder_factory as patch_encoder_factory,
 )

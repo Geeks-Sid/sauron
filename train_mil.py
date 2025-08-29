@@ -6,7 +6,7 @@ import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
 
 from aegis.data.dataset_factory import determine_split_directory, get_data_manager
-from aegis.parse.cli_parsers import get_args
+from aegis.parse.cli_parsers import get_mil_args
 from aegis.training.pipeline import train_fold
 from aegis.utils.environment_setup import (
     create_results_directory,
@@ -164,7 +164,6 @@ def run_experiment_folds(
     fold_num_series = list(range(args.k_start, args.k_start + num_folds_run))
     return pd.DataFrame({"fold_num": fold_num_series, **all_fold_metrics})
 
-
 def main_experiment_runner(args: argparse.Namespace):
     """
     Main function to run the entire experiment.
@@ -215,7 +214,9 @@ def main_experiment_runner(args: argparse.Namespace):
             if hasattr(args, "ignore_labels") and args.ignore_labels
             else None,
             "patient_label_aggregation": getattr(
-                args, "patient_label_aggregation", "max"
+                args,
+                "patient_label_aggregation",
+                "max",
             ),
             "shuffle": getattr(args, "shuffle_data", False),
             "time_column": getattr(args, "time_col", None),
@@ -267,7 +268,8 @@ def main_experiment_runner(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    args = get_args()  # Parse arguments
+    parser = argparse.ArgumentParser(description='MIL Training')
+    args = get_mil_args(parser)
 
     if not hasattr(args, "task_name"):
         args.task_name = args.task

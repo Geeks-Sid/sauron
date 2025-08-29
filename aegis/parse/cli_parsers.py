@@ -1,13 +1,16 @@
 import argparse
 
+def parse_feature_extraction_arguments():
+    parser = argparse.ArgumentParser(description="aegis feature extraction")
+    build_feature_extraction_parser(parser)
+    return parser.parse_args()
 
-def build_feature_extraction_parser():
+
+
+def build_feature_extraction_parser(parser: argparse.ArgumentParser):
     """
     Parse command-line arguments for the aegis feature extraction script.
     """
-    parser = argparse.ArgumentParser(
-        description="Run aegis Whole Slide Image Processing"
-    )
 
     # Generic arguments
     parser.add_argument(
@@ -267,15 +270,7 @@ def build_feature_extraction_parser():
     return parser
 
 
-def parse_feature_extraction_arguments():
-    return build_feature_extraction_parser().parse_args()
-
-
-def get_mil_args():
-    parser = argparse.ArgumentParser(
-        description="Configurations for Whole Slide Image (WSI) Training",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+def get_mil_args(parser: argparse.ArgumentParser):
 
     # Data & I/O Configuration
     parser.add_argument(
@@ -519,6 +514,3 @@ def get_mil_args():
         default=32,
         help="Gradient Accumulation Step.",
     )
-
-    args = parser.parse_args()
-    return args

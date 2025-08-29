@@ -1,1 +1,7 @@
 termcolor
+torch
+geopandas
+scikit-image
+scikit-learn
+scikit-survival
+scipy
