@@ -1,10 +1,10 @@
 import argparse
 
+
 def parse_feature_extraction_arguments():
     parser = argparse.ArgumentParser(description="aegis feature extraction")
     build_feature_extraction_parser(parser)
     return parser.parse_args()
-
 
 
 def build_feature_extraction_parser(parser: argparse.ArgumentParser):
@@ -35,7 +35,7 @@ def build_feature_extraction_parser(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--max_workers",
         type=int,
-        default=None,
+        default=12,
         help="Maximum number of workers for data loading (e.g., in DataLoader). If None, inferred based on CPU cores.",
     )
     parser.add_argument(
@@ -271,7 +271,6 @@ def build_feature_extraction_parser(parser: argparse.ArgumentParser):
 
 
 def get_mil_args(parser: argparse.ArgumentParser):
-
     # Data & I/O Configuration
     parser.add_argument(
         "--data_root_dir",

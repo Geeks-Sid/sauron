@@ -7,14 +7,14 @@ set -euo pipefail
 # Adjust these as needed for your environment and job.
 
 # Directories and Paths
-SOURCE_DIR="/media/mydrive/TCGA/TCGA-BRCA-FLAT/"
-STEP_SIZE="256"
-PATCH_SIZE="256"
+SOURCE_DIR="./CPTAC_COAD/COAD/"
+STEP_SIZE="224"
+PATCH_SIZE="224"
 PATCH=true
 SEG=true
 STITCH=false
 NO_AUTO_SKIP=true
-SAVE_DIR="/media/mydrive/TCGA/TCGA-BRCA-features"
+SAVE_DIR="./CPTAC_COAD/COAD-features"
 PRESET=""           # e.g., "/path/to/preset.csv" or leave empty
 PATCH_LEVEL="0"
 PROCESS_LIST=""     # e.g., "/path/to/list.csv" or leave empty

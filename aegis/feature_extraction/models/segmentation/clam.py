@@ -1,5 +1,4 @@
 import torch
-from torch import nn
 from torchvision import transforms
 
 from aegis.feature_extraction.models.segmentation.classic_segmenter_utils import (

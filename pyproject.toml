@@ -30,7 +30,7 @@ dependencies = [
     "numpy",
     "pandas>=2.0.0,<2.3.0",
     "scikit-learn",
-    "scikit-survival==0.22.2",
+    "scikit-survival",
     "lifelines",
     "tqdm",
     "h5py",
