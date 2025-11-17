@@ -520,6 +520,14 @@ class ClassificationDataManager:
 
 
 class WSIMILDataset(Dataset):
+    """
+    Dataset for Multiple Instance Learning (MIL) classification tasks.
+    
+    This dataset works with both batch_size=1 and batch_size>1 when used with
+    the appropriate collate function (collate_mil_features). The collate function
+    ensures consistent tensor dimensions by always returning 3D tensors:
+    (batch_size, max_instances, feature_dim) for features.
+    """
     def __init__(
         self,
         slide_data_df: pd.DataFrame,

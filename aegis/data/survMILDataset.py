@@ -609,6 +609,16 @@ class SurvivalDataManager:
 
 
 class SurvivalMILDataset(Dataset):
+    """
+    Dataset for Multiple Instance Learning (MIL) survival analysis tasks.
+    
+    This dataset works with both batch_size=1 and batch_size>1 when used with
+    the appropriate collate function (collate_mil_survival). The collate function
+    ensures consistent tensor dimensions:
+    - Path features: concatenated across all patients in batch (2D: total_instances, feature_dim)
+    - Omic features: stacked with batch dimension (2D: batch_size, omic_feature_dim)
+    - Labels: always have batch dimension (1D: batch_size)
+    """
     def __init__(
         self,
         patient_data_df: pd.DataFrame,  # DF for patients in this specific split
