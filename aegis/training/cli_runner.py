@@ -53,7 +53,8 @@ def run_experiment_folds(
     # For ClassificationDataManager:
     if args.task_type.lower() == "classification":
         data_manager.create_k_fold_splits(
-            num_folds=args.k, test_set_size=getattr(args, "test_frac", 0.1)
+            num_folds=args.k,
+            test_set_size=getattr(args, "test_frac", 0.1)
         )
         num_actual_folds = data_manager.get_number_of_folds()
         if num_actual_folds == 0 and args.k > 0:  # No k-folds, but test set might exist
@@ -247,6 +248,7 @@ def run_mil_training_job(args: argparse.Namespace):  # Renamed `main_experiment_
             "shuffle": getattr(
                 args, "shuffle_data", False
             ),  # For ClassificationDataManager initial load
+            "split_dir": getattr(args, "split_dir", None),
             # Survival specific from args
             "time_column": getattr(args, "time_col", None),
             "event_column": getattr(args, "event_col", None),

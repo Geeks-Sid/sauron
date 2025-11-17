@@ -3,16 +3,16 @@ from aegis.feature_extraction.models.patch_encoders.factory import encoder_facto
 # Updated imports to reflect the new structure
 from aegis.mil_models.ABMIL import DAttention
 from aegis.mil_models.DiffABMIL import DifferentiableAttentionMIL
+from aegis.mil_models.dsmil import DSMIL
 from aegis.mil_models.hgachc import HGACrossHeadCom
 from aegis.mil_models.MaxMIL import MaxMIL
 from aegis.mil_models.MeanMIL import MeanMIL
+from aegis.mil_models.rrtmil import RRT as rrtmil
 from aegis.mil_models.S4MIL import (
     S4Model,  # Assuming S4Model is the class name in S4MIL.py
 )
 from aegis.mil_models.TransMIL import TransMIL
 from aegis.mil_models.WIKGMIL import WiKG
-from aegis.mil_models.dsmil import dsmil
-from aegis.mil_models.rrtmil import RRT as rrtmil
 
 
 def mil_model_factory(args, in_dim=None):
@@ -95,6 +95,20 @@ def mil_model_factory(args, in_dim=None):
         )
     elif model_type == "hgachc":
         return HGACrossHeadCom(
+            in_dim=in_dim,
+            n_classes=args.n_classes,
+            dropout_rate=args.drop_out,
+            is_survival=is_survival_task,
+        )
+    elif model_type == "rrtmil":
+        return rrtmil(
+            in_dim=in_dim,
+            n_classes=args.n_classes,
+            dropout_rate=args.drop_out,
+            is_survival=is_survival_task,
+        )
+    elif model_type == "dsmil":
+        return DSMIL(
             in_dim=in_dim,
             n_classes=args.n_classes,
             dropout_rate=args.drop_out,

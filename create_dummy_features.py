@@ -29,7 +29,7 @@ def create_dummy_features(csv_path, output_dir="dummy_features"):
         return
 
     for slide_id in df["slide_id"]:
-        # Generate a random number of features (N) between 200 and 2000
+        # Generate a random number of features (N) between 200 and 2001
         n_features = np.random.randint(200, 2001)
         
         # Create dummy features of size (N, 1024)

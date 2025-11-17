@@ -28,6 +28,7 @@ class ClassificationDataManager:
         ignore_labels: Optional[List[str]] = None,  # Original string labels to ignore
         patient_stratification: bool = False,  # If true, __len__ uses patient_data
         patient_label_aggregation: str = "max",  # 'max' or 'majority'
+        split_dir: Optional[str] = None
     ):
         self.csv_path = csv_path
         self.data_directory = data_directory
@@ -40,6 +41,7 @@ class ClassificationDataManager:
         self.patient_stratification = (
             patient_stratification  # Used by __len__ if this class were a Dataset
         )
+        self.split_dir = split_dir
 
         self.train_patient_ids: Optional[List[str]] = None
         self.val_patient_ids: Optional[List[str]] = None
@@ -220,11 +222,48 @@ class ClassificationDataManager:
             print("\nNo classes defined or no data loaded.")
         print("----------------------------------------")
 
+    def _load_splits_from_dir(self, num_folds: int) -> bool:
+        if not self.split_dir or not os.path.isdir(self.split_dir):
+            return False
+
+        self.kfold_splits = []
+        for i in range(num_folds):
+            split_file = os.path.join(self.split_dir, f"splits_{i}.csv")
+            if not os.path.isfile(split_file):
+                print(f"Warning: Split file not found for fold {i}: {split_file}")
+                continue
+
+            df = pd.read_csv(split_file)
+            train_ids = df["train_patient_id"].dropna().tolist()
+            val_ids = df["val_patient_id"].dropna().tolist()
+            # The test set is loaded once and assumed to be consistent across folds
+            if self.test_patient_ids is None and "test_patient_id" in df:
+                self.test_patient_ids = df["test_patient_id"].dropna().tolist()
+
+            # Store patient IDs for each fold
+            self.kfold_splits.append((train_ids, val_ids))
+
+        if not self.kfold_splits:
+            print(f"Warning: No split files found in {self.split_dir}. Falling back to automatic splitting.")
+            return False
+
+        if self.verbose:
+            print(f"Successfully loaded {len(self.kfold_splits)} splits from {self.split_dir}")
+            if self.test_patient_ids:
+                print(f"Loaded {len(self.test_patient_ids)} test patient IDs.")
+        return True
+
     def create_k_fold_splits(
         self, num_folds: int = 5, test_set_size: float = 0.1
     ) -> None:
         if self.patient_data.empty:
             raise ValueError("Patient data is empty. Cannot create splits.")
+
+        # Attempt to load splits from directory first
+        if self._load_splits_from_dir(num_folds):
+            # Test patient IDs are already set by _load_splits_from_dir
+            # The kfold_splits now contains (train_ids, val_ids) tuples
+            return
 
         # Create initial test set from patients
         if test_set_size > 0:
@@ -239,7 +278,7 @@ class ClassificationDataManager:
             train_val_patients_df = self.patient_data.copy()
             self.test_patient_ids = []
 
-        if num_folds > 0 and not train_val_patients_df.empty:
+        if num_folds > 1 and not train_val_patients_df.empty:
             skf = StratifiedKFold(
                 n_splits=num_folds, shuffle=True, random_state=self.random_seed
             )
@@ -247,17 +286,32 @@ class ClassificationDataManager:
             self.train_val_patient_data_for_kfold = train_val_patients_df.reset_index(
                 drop=True
             )
-            self.kfold_splits = list(
+            # This kfold_splits contains indices, not patient IDs
+            self.kfold_splits_indices = list(
                 skf.split(
                     self.train_val_patient_data_for_kfold,
                     self.train_val_patient_data_for_kfold["label"],
                 )
             )
+        elif num_folds == 1 and not train_val_patients_df.empty:
+            # If num_folds is 1, treat it as a single train/val split from the remaining data
+            # We need to split train_val_patients_df into actual train and val
+            train_patients_df, val_patients_df = train_test_split(
+                train_val_patients_df,
+                test_size=0.2,  # Default 20% for validation if not k-folding
+                stratify=train_val_patients_df["label"],
+                random_state=self.random_seed,
+            )
+            self.train_patient_ids = train_patients_df["case_id"].tolist()
+            self.val_patient_ids = val_patients_df["case_id"].tolist()
+            self.kfold_splits = None
+            self.kfold_splits_indices = None
         else:
-            # If no k-folds, all train_val_patients become train, and val is empty
+            # If no k-folds (num_folds <= 0) or empty df, all train_val_patients become train, and val is empty
             self.train_patient_ids = train_val_patients_df["case_id"].tolist()
             self.val_patient_ids = []
-            self.kfold_splits = None  # Explicitly set to None
+            self.kfold_splits = None
+            self.kfold_splits_indices = None
 
         if self.verbose:
             print(
@@ -267,35 +321,35 @@ class ClassificationDataManager:
             print(f"Total patients for Test: {len(self.test_patient_ids)}")
 
     def set_current_fold(self, fold_index: int = 0) -> None:
-        if (
-            self.kfold_splits is None and self.train_patient_ids is not None
-        ):  # Test set only or no kfold case
-            # Test patient IDs are already set in create_k_fold_splits
-            # Train/Val patient IDs are also set if no kfold
-            pass  # Patient IDs are already set
-        elif self.kfold_splits is None or self.train_val_patient_data_for_kfold is None:
-            raise ValueError(
-                "K-Fold splits have not been created. Call create_k_fold_splits() first."
-            )
-        elif fold_index >= len(self.kfold_splits):
-            raise ValueError(
-                f"Fold index {fold_index} is out of bounds for {len(self.kfold_splits)} folds."
-            )
-        else:
-            train_patient_indices_in_kfold_df, val_patient_indices_in_kfold_df = (
-                self.kfold_splits[fold_index]
-            )
+        # Case 1: Splits were loaded from a directory
+        if self.kfold_splits and isinstance(self.kfold_splits[0][0], list):
+            if fold_index >= len(self.kfold_splits):
+                raise ValueError(f"Fold index {fold_index} is out of bounds for {len(self.kfold_splits)} loaded splits.")
+            
+            self.train_patient_ids, self.val_patient_ids = self.kfold_splits[fold_index]
+            # self.test_patient_ids is already set
 
-            train_patients_df = self.train_val_patient_data_for_kfold.iloc[
-                train_patient_indices_in_kfold_df
-            ]
-            val_patients_df = self.train_val_patient_data_for_kfold.iloc[
-                val_patient_indices_in_kfold_df
-            ]
+        # Case 2: No k-folds were generated (e.g., k=0 or k=1), simple train/val/test split
+        elif (self.kfold_splits is None or not hasattr(self, 'kfold_splits_indices') or self.kfold_splits_indices is None) and self.train_patient_ids is not None:
+            pass  # Patient IDs are already set in create_k_fold_splits
+
+        # Case 3: Splits were generated by StratifiedKFold (original logic)
+        elif hasattr(self, 'kfold_splits_indices') and self.kfold_splits_indices is not None:
+            if self.train_val_patient_data_for_kfold is None:
+                 raise ValueError("K-Fold splits have not been created. Call create_k_fold_splits() first.")
+            if fold_index >= len(self.kfold_splits_indices):
+                raise ValueError(f"Fold index {fold_index} is out of bounds for {len(self.kfold_splits_indices)} folds.")
+            
+            train_patient_indices, val_patient_indices = self.kfold_splits_indices[fold_index]
+
+            train_patients_df = self.train_val_patient_data_for_kfold.iloc[train_patient_indices]
+            val_patients_df = self.train_val_patient_data_for_kfold.iloc[val_patient_indices]
 
             self.train_patient_ids = train_patients_df["case_id"].tolist()
             self.val_patient_ids = val_patients_df["case_id"].tolist()
-            # self.test_patient_ids was set during create_k_fold_splits
+        
+        else:
+            raise ValueError("Split state is inconsistent. Could not set fold.")
 
         # Map patient IDs to slide indices
         self.train_slide_indices = (
@@ -564,7 +618,7 @@ class WSIMILDataset(Dataset):
                 raise RuntimeError(f"Error loading {file_path}: {e}") from e
         else:
             file_path = os.path.join(
-                current_data_dir_path, "h5_files", f"{slide_id}.h5"
+                current_data_dir_path, f"{slide_id}.h5"
             )
             # HDF5 typically isn't cached in memory this way due to size, but could be if small
             try:

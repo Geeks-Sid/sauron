@@ -56,18 +56,22 @@ class aegis(pl.LightningModule):
         return self.model(x)
 
     def _get_outputs_and_loss(self, batch):
-        data, label, event, c = batch  # Assuming dataloader provides these
-
         if self.args.task_type.lower() == "classification":
+            if len(batch) == 3:
+                data, label, _ = batch
+            else:
+                data, label = batch
             logits, probs, preds, _, _ = self.model(data)
             loss = self.loss_fn(logits, label)
             return loss, logits, probs, label, None, None
-
         elif self.args.task_type.lower() == "survival":
+            data, label, event, c = batch  # Assuming dataloader provides these
             hazards, S, preds, _, _ = self.model(data)
             loss = self.loss_fn(hazards=hazards, S=S, Y=label, c=c)
             risk = -torch.sum(S, dim=1)
             return loss, risk, None, event, c, None
+        else:
+            raise ValueError(f"Unknown task type: {self.args.task_type}")
 
     def training_step(self, batch, batch_idx):
         loss, outputs, _, _, _, _ = self._get_outputs_and_loss(batch)

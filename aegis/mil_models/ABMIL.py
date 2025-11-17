@@ -86,8 +86,19 @@ class DAttention(
         self.apply(initialize_weights)
 
     def forward(self, input_tensor: torch.Tensor):
-        # input_tensor: (batch_size, num_instances, in_dim)
-        batch_size = input_tensor.shape[0]
+        # input_tensor: (batch_size, num_instances, in_dim) or (num_instances, in_dim)
+
+        # Handle both 2D and 3D input tensors
+        if input_tensor.dim() == 2:
+            # If 2D, add batch dimension: (num_instances, in_dim) -> (1, num_instances, in_dim)
+            input_tensor = input_tensor.unsqueeze(0)
+            batch_size = 1
+        elif input_tensor.dim() == 3:
+            batch_size = input_tensor.shape[0]
+        else:
+            raise ValueError(
+                f"Expected input_tensor to be 2D or 3D, got {input_tensor.dim()}D"
+            )
 
         instance_features = self.feature_extractor(
             input_tensor
@@ -96,13 +107,31 @@ class DAttention(
         attention_logits = self.attention_net(
             instance_features
         )  # (batch_size, num_instances, K)
+        # Ensure 3D tensor: if K=1, might be squeezed to 2D
+        if attention_logits.dim() == 2:
+            attention_logits = attention_logits.unsqueeze(
+                -1
+            )  # (batch_size, num_instances, 1)
         attention_logits = torch.transpose(
             attention_logits, 2, 1
         )  # (batch_size, K, num_instances)
 
+        # Create mask for padded instances (where all features are zero)
+        # Check if all features in an instance are zero (padded)
+        # input_tensor is now guaranteed to be 3D after handling above
+        instance_mask = (
+            input_tensor.abs().sum(dim=-1) > 1e-6
+        )  # (batch_size, num_instances)
+        # Expand mask to match attention_logits shape: (batch_size, K, num_instances)
+        instance_mask = instance_mask.unsqueeze(1).expand_as(attention_logits)
+
+        # Apply mask: set attention logits to very negative value for padded instances
+        attention_logits = attention_logits.masked_fill(~instance_mask, float("-inf"))
+
         attention_scores = F.softmax(attention_logits, dim=2)  # Softmax over instances
 
         # M = KxL equivalent for batch: (batch_size, K, embed_dim)
+        # instance_features should be 3D: (batch_size, num_instances, embed_dim)
         aggregated_features = torch.bmm(attention_scores, instance_features)
 
         # If K=1, aggregated_features is (batch_size, 1, embed_dim)
@@ -174,8 +203,19 @@ class GatedAttention(nn.Module):
         self.apply(initialize_weights)
 
     def forward(self, input_tensor: torch.Tensor):
-        # input_tensor: (batch_size, num_instances, in_dim)
-        batch_size = input_tensor.shape[0]
+        # input_tensor: (batch_size, num_instances, in_dim) or (num_instances, in_dim)
+
+        # Handle both 2D and 3D input tensors
+        if input_tensor.dim() == 2:
+            # If 2D, add batch dimension: (num_instances, in_dim) -> (1, num_instances, in_dim)
+            input_tensor = input_tensor.unsqueeze(0)
+            batch_size = 1
+        elif input_tensor.dim() == 3:
+            batch_size = input_tensor.shape[0]
+        else:
+            raise ValueError(
+                f"Expected input_tensor to be 2D or 3D, got {input_tensor.dim()}D"
+            )
 
         instance_features = self.feature_extractor(
             input_tensor
@@ -192,14 +232,35 @@ class GatedAttention(nn.Module):
         unnormalized_attention_scores = self.attention_weights(
             attention_values * attention_units
         )  # (batch_size, num_instances, K)
+        # Ensure 3D tensor: if K=1, might be squeezed to 2D
+        if unnormalized_attention_scores.dim() == 2:
+            unnormalized_attention_scores = unnormalized_attention_scores.unsqueeze(
+                -1
+            )  # (batch_size, num_instances, 1)
         unnormalized_attention_scores = torch.transpose(
             unnormalized_attention_scores, 2, 1
         )  # (batch_size, K, num_instances)
+
+        # Create mask for padded instances (where all features are zero)
+        # input_tensor is now guaranteed to be 3D after handling above
+        instance_mask = (
+            input_tensor.abs().sum(dim=-1) > 1e-6
+        )  # (batch_size, num_instances)
+        # Expand mask to match attention_logits shape: (batch_size, K, num_instances)
+        instance_mask = instance_mask.unsqueeze(1).expand_as(
+            unnormalized_attention_scores
+        )
+
+        # Apply mask: set attention logits to very negative value for padded instances
+        unnormalized_attention_scores = unnormalized_attention_scores.masked_fill(
+            ~instance_mask, float("-inf")
+        )
 
         normalized_attention_scores = F.softmax(
             unnormalized_attention_scores, dim=2
         )  # Softmax over instances
 
+        # instance_features should be 3D: (batch_size, num_instances, embed_dim)
         aggregated_features = torch.bmm(
             normalized_attention_scores, instance_features
         )  # (batch_size, K, embed_dim)

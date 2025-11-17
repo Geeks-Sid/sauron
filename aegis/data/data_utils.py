@@ -171,7 +171,8 @@ def collate_mil_features(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Collate function for MIL when batch items are (Tensor_Features, Label_Int).
-    Concatenates all feature tensors (bags) along dimension 0.
+    When batch_size=1, returns the single bag as 2D tensor (num_instances, feature_dim).
+    When batch_size>1, pads bags to same length and stacks them into 3D tensor (batch_size, max_instances, feature_dim).
     Labels are converted to a LongTensor.
     """
     # Filter out None items if any dataset returns None (e.g. for failed loads, though ideally handled in Dataset)
@@ -184,12 +185,29 @@ def collate_mil_features(
     #     return torch.empty(0), torch.empty(0, dtype=torch.long)
 
     try:
-        # Assuming item[0] is a tensor of features for one WSI (bag of instances)
-        # These features are typically [Number_of_Patches, Feature_Dimension]
-        # Concatenating them makes [Total_Patches_in_Batch, Feature_Dimension]
-        # This is standard for some MIL approaches where the model processes all patches from batch.
-        features = torch.cat([item[0] for item in batch], dim=0)
+        features_list = [item[0] for item in batch]
         labels = torch.tensor([item[1] for item in batch], dtype=torch.long)
+        
+        # If batch_size=1, return as 2D tensor (for backward compatibility)
+        if len(batch) == 1:
+            features = features_list[0]  # (num_instances, feature_dim)
+        else:
+            # For batch_size > 1, pad all bags to the same length and stack
+            # Find max number of instances
+            max_instances = max(feat.shape[0] for feat in features_list)
+            feature_dim = features_list[0].shape[1]
+            
+            # Pad and stack
+            padded_features = []
+            for feat in features_list:
+                if feat.shape[0] < max_instances:
+                    # Pad with zeros
+                    padding = torch.zeros(max_instances - feat.shape[0], feature_dim, dtype=feat.dtype, device=feat.device)
+                    feat = torch.cat([feat, padding], dim=0)
+                padded_features.append(feat)
+            
+            # Stack into 3D tensor: (batch_size, max_instances, feature_dim)
+            features = torch.stack(padded_features, dim=0)
     except Exception as e:
         print("Error during collation (collate_mil_features):")
         for i, item in enumerate(batch):

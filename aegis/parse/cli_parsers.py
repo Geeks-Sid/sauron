@@ -336,6 +336,11 @@ def get_mil_args(parser: argparse.ArgumentParser):
         default="no",
         help="Specify whether to preload data into memory for faster access during training. Options are 'yes' or 'no'.",
     )
+    parser.add_argument(
+        "--use_hdf5",
+        action="store_true",
+        help="Enable the use of HDF5 files for feature storage.",
+    )
 
     # Training Hyperparameters
     parser.add_argument(
