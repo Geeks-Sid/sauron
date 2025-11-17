@@ -11,6 +11,8 @@ from aegis.mil_models.S4MIL import (
 )
 from aegis.mil_models.TransMIL import TransMIL
 from aegis.mil_models.WIKGMIL import WiKG
+from aegis.mil_models.dsmil import dsmil
+from aegis.mil_models.rrtmil import RRT as rrtmil
 
 
 def mil_model_factory(args, in_dim=None):
