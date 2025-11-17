@@ -164,6 +164,7 @@ def run_experiment_folds(
     fold_num_series = list(range(args.k_start, args.k_start + num_folds_run))
     return pd.DataFrame({"fold_num": fold_num_series, **all_fold_metrics})
 
+
 def main_experiment_runner(args: argparse.Namespace):
     """
     Main function to run the entire experiment.
@@ -268,8 +269,10 @@ def main_experiment_runner(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='MIL Training')
+    parser = argparse.ArgumentParser(description="MIL Training")
     args = get_mil_args(parser)
+    args.backbone = 'clam_sb'
+    args.task_name = 'tcga_ot'
 
     if not hasattr(args, "task_name"):
         args.task_name = args.task

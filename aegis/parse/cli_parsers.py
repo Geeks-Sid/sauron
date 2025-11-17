@@ -279,6 +279,30 @@ def get_mil_args(parser: argparse.ArgumentParser):
         help="Specify the root directory where the dataset is located. This is essential for loading the data correctly.",
     )
     parser.add_argument(
+        "--dataset_csv",
+        type=str,
+        default=None,
+        help="Path to the CSV file with slide ids, patient ids, and labels.",
+    )
+    parser.add_argument(
+        "--label_col",
+        type=str,
+        default="label",
+        help="Name of the column containing the labels in the dataset CSV.",
+    )
+    parser.add_argument(
+        "--patient_id_col",
+        type=str,
+        default="case_id",
+        help="Name of the column containing patient IDs.",
+    )
+    parser.add_argument(
+        "--slide_id_col",
+        type=str,
+        default="slide_id",
+        help="Name of the column containing slide IDs.",
+    )
+    parser.add_argument(
         "--results_dir",
         default="./results",
         help="Path to the directory where training results and model checkpoints will be saved. Default is './results'.",

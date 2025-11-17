@@ -163,3 +163,11 @@ cython_debug/
 CLAM
 CPTAC_COAD/
 CPTAC_COAD_MIN/
+dummy_features/*
+dummy_features/*.h5
+node_modules/
+
+Data/*.csv
+results/*
+dummy_slides.csv
+aegis/utils/wsi-detailed-report.csv

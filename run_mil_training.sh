@@ -1,0 +1,27 @@
+python train_mil_run.py \
+    --data_root_dir dummy_features \
+    --dataset_csv Data/tcga-ot_train.csv \
+    --label_col OncoTreeCode \
+    --patient_id_col case_id \
+    --slide_id_col slide_id \
+    --results_dir ./results \
+    --task multiclass \
+    --task_type classification \
+    --exp_code tcga_ot_multiclass_s1 \
+    --seed 1 \
+    --log_data \
+    --testing \
+    --k 1 \
+    --k_start 0 \
+    --k_end 1 \
+    --model_type att_mil \
+    --backbone resnet50 \
+    --in_dim 1024 \
+    --max_epochs 200 \
+    --lr 1e-4 \
+    --reg 1e-5 \
+    --opt adam \
+    --drop_out 0.25 \
+    --early_stopping \
+    --weighted_sample \
+    --batch_size 1
