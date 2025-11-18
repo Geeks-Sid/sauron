@@ -71,39 +71,17 @@ if [ ! -f "train_mil_run.py" ]; then
     exit 1
 fi
 
+# Set DATA_ROOT based on OS
+if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
+    # Native Windows (Git Bash, etc.): use Windows path format
+    DATA_ROOT="${DATA_ROOT:-E:\features_uni_v2}"
+else
+    # Linux/Unix/WSL: use /mnt/e mount point
+    DATA_ROOT="${DATA_ROOT:-/mnt/e/features_uni_v2}"
+fi
+
 echo "Launching training..."
-python -u train_mil_run.py \
-    --data_root_dir /mnt/e/features_uni_v2 \
-    --dataset_csv Data/tcga-ot_train.csv \
-    --label_col OncoTreeCode \
-    --patient_id_col case_id \
-    --slide_id_col slide_id \
-    --results_dir ./results \
-    --task multiclass \
-    --task_type classification \
-    --exp_code tcga_ot_multiclass_s1 \
-    --seed 42 \
-    --num_workers 16 \
-    --log_data \
-    --testing \
-    --k 1 \
-    --k_start 0 \
-    --k_end 1 \
-    --model_type att_mil \
-    --backbone uni_v2 \
-    --in_dim 1536 \
-    --max_epochs 200 \
-    --lr 1e-4 \
-    --reg 1e-5 \
-    --opt adam \
-    --drop_out 0.25 \
-    --early_stopping \
-    --preloading no \
-    --weighted_sample \
-    --batch_size 4 \
-    --use_hdf5 \
-    --n_subsamples 2048 \
-    
+python -u train_mil_run.py --data_root_dir "$DATA_ROOT" --dataset_csv Data/tcga-ot_train.csv --label_col OncoTreeCode --patient_id_col case_id --slide_id_col slide_id --results_dir ./results --task multiclass --task_type classification --exp_code tcga_ot_multiclass_s1 --seed 42 --num_workers 16 --log_data --testing --k 1 --k_start 0 --k_end 1 --model_type att_mil --backbone uni_v2 --in_dim 1536 --max_epochs 200 --lr 1e-4 --reg 1e-5 --opt adam --drop_out 0.25 --early_stopping --preloading no --weighted_sample --batch_size 4 --use_hdf5 --n_subsamples 2048 
 
 # Example: To use a different model, change --model_type:
 # --model_type trans_mil --activation gelu

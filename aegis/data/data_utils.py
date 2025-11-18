@@ -1,4 +1,5 @@
 import collections
+import functools
 from typing import Iterator, List, Optional, Tuple, Union
 
 import numpy as np
@@ -329,6 +330,8 @@ def get_dataloader(  # Renamed from get_split_loader for generality
     # Removed `testing` flag, as subset sampling is usually for debugging/prototyping
     # and can be handled by passing a Subset of the dataset if needed.
     # device: Optional[torch.device] = None, # Not strictly needed for DataLoader creation
+    persistent_workers: bool = True,
+    prefetch_factor: int = 16,
 ) -> DataLoader:
     """
     Creates a PyTorch DataLoader for a given dataset.
@@ -390,9 +393,11 @@ def get_dataloader(  # Renamed from get_split_loader for generality
         n_subsamples = dataset.n_subsamples
 
     if collate_fn_type.lower() == "classification":
-        # Create a collate function with n_subsamples captured
-        def collate_function(batch):
-            return collate_mil_features(batch, n_subsamples=n_subsamples)
+        # Use functools.partial to create a picklable collate function
+        # This is required for Windows multiprocessing (spawn method)
+        collate_function = functools.partial(
+            collate_mil_features, n_subsamples=n_subsamples
+        )
     elif collate_fn_type.lower() == "survival":
         collate_function = collate_mil_survival
     else:
@@ -409,12 +414,8 @@ def get_dataloader(  # Renamed from get_split_loader for generality
         num_workers=current_num_workers,
         pin_memory=current_pin_memory,
         drop_last=False,  # Typically False for MIL unless batch_size > 1 and partial batches are an issue
-        persistent_workers=True
-        if current_num_workers > 0
-        else False,  # Keep workers alive between epochs to reduce overhead
-        prefetch_factor=16
-        if current_num_workers > 0
-        else 2,  # Increase prefetch to keep GPU fed (default is 2)
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
     )
 
     print("DataLoader created successfully.")

@@ -24,30 +24,26 @@ def train_fold(
 
     # DataLoaders
     n_subsamples = getattr(args, "n_subsamples", None)
-    num_workers = getattr(args, "num_workers", 16)
+
+    loader_kwargs = {
+        "batch_size": args.batch_size,
+        "collate_fn_type": args.task_type,
+        "n_subsamples": n_subsamples,
+        "num_workers": getattr(
+            args, "num_workers", 8
+        ),  # Try reducing from 16 to 4 or 8 first
+        "pin_memory": True,  # <--- ADD THIS
+        "persistent_workers": True,  # <--- ADD THIS (Only works if num_workers > 0)
+    }
+
     train_loader = get_dataloader(
         train_dataset,
-        batch_size=args.batch_size,
         shuffle=True,
         use_weighted_sampler=args.weighted_sample,
-        collate_fn_type=args.task_type,
-        n_subsamples=n_subsamples,
-        num_workers=num_workers,
+        **loader_kwargs,
     )
-    val_loader = get_dataloader(
-        val_dataset,
-        batch_size=args.batch_size,
-        collate_fn_type=args.task_type,
-        n_subsamples=n_subsamples,
-        num_workers=num_workers,
-    )
-    test_loader = get_dataloader(
-        test_dataset,
-        batch_size=args.batch_size,
-        collate_fn_type=args.task_type,
-        n_subsamples=n_subsamples,
-        num_workers=num_workers,
-    )
+    val_loader = get_dataloader(val_dataset, shuffle=False, **loader_kwargs)
+    test_loader = get_dataloader(test_dataset, shuffle=False, **loader_kwargs)
 
     # Model
     model = aegis(args)
