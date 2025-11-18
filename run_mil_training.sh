@@ -32,13 +32,44 @@ echo "Starting MIL training script..."
 echo "Current directory: $(pwd)"
 
 # Initialize conda for bash script
-# shellcheck source=/dev/null
-source "$(conda info --base)/etc/profile.d/conda.sh"
+# Try multiple methods to initialize conda
+CONDA_BASE=""
+if command -v conda &> /dev/null; then
+    CONDA_BASE=$(conda info --base 2>/dev/null || echo "")
+fi
+
+if [ -n "$CONDA_BASE" ] && [ -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]; then
+    # shellcheck source=/dev/null
+    source "${CONDA_BASE}/etc/profile.d/conda.sh"
+elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    # shellcheck source=/dev/null
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+    # shellcheck source=/dev/null
+    source "$HOME/anaconda3/etc/profile.d/conda.sh"
+else
+    echo "Error: Could not find conda initialization script"
+    echo "Please ensure conda is installed and accessible"
+    exit 1
+fi
 
 # Activate conda environment
 echo "Activating conda environment: aegis"
-conda activate aegis
+# Initialize conda for this shell
+eval "$(conda shell.bash hook)"
+conda activate aegis || {
+    echo "Error: Failed to activate conda environment 'aegis'"
+    echo "Please ensure the environment exists: conda env list"
+    exit 1
+}
 echo "Conda environment activated. Python path: $(which python)"
+
+# Verify Python script exists
+if [ ! -f "train_mil_run.py" ]; then
+    echo "Error: train_mil_run.py not found in current directory: $(pwd)"
+    echo "Please ensure you're running this script from the project root directory"
+    exit 1
+fi
 
 echo "Launching training..."
 python -u train_mil_run.py \
@@ -52,6 +83,7 @@ python -u train_mil_run.py \
     --task_type classification \
     --exp_code tcga_ot_multiclass_s1 \
     --seed 42 \
+    --num_workers 16 \
     --log_data \
     --testing \
     --k 1 \
@@ -70,7 +102,7 @@ python -u train_mil_run.py \
     --batch_size 16 \
     --use_hdf5 \
     --n_subsamples 2048 \
-    --num_workers 16
+    
 
 # Example: To use a different model, change --model_type:
 # --model_type trans_mil --activation gelu

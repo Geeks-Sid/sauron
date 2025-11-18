@@ -740,9 +740,3 @@ class WSIMILDataset(Dataset):
         sampled_features = features[indices]
         sampled_coords = coordinates[indices]
         return sampled_features, sampled_coords
-
-    @property
-    def verbose(
-        self,
-    ):  # Simple way to make it accessible if needed, or pass as init arg
-        return True  # Or control via an __init__ param
