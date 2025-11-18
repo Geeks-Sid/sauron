@@ -422,7 +422,7 @@ class ClassificationDataManager:
         use_hdf5: bool = False,
         cache_enabled: bool = False,
         n_subsamples: int = -1,
-        features_h5_path: Optional[str] = None, # New parameter
+        features_h5_path: Optional[str] = None,  # New parameter
     ) -> Tuple[
         Optional[WSIMILDataset], Optional[WSIMILDataset], Optional[WSIMILDataset]
     ]:
@@ -453,7 +453,7 @@ class ClassificationDataManager:
             "use_hdf5": use_hdf5,
             "cache_enabled": cache_enabled,
             "n_subsamples": n_subsamples,
-            "features_h5_path": features_h5_path, # Pass the new parameter
+            "features_h5_path": features_h5_path,  # Pass the new parameter
         }
 
         train_dataset = (
@@ -703,15 +703,19 @@ class WSIMILDataset(Dataset):
                 try:
                     # Access features within the global H5 file using slide_id as a group key
                     if slide_id not in hdf5_file:
-                        raise KeyError(f"Slide ID '{slide_id}' not found in global H5 file groups.")
-                    
+                        raise KeyError(
+                            f"Slide ID '{slide_id}' not found in global H5 file groups."
+                        )
+
                     slide_group = hdf5_file[slide_id]
                     features_dset = slide_group["features"]
                     num_patches = features_dset.shape[0]
 
                     # Decide which indices to sample.
                     if self.n_subsamples > 0 and num_patches > self.n_subsamples:
-                        indices = torch.randperm(num_patches)[: self.n_subsamples].numpy()
+                        indices = torch.randperm(num_patches)[
+                            : self.n_subsamples
+                        ].numpy()
                         indices.sort()  # Sorting indices can lead to faster reads
                     else:
                         indices = np.arange(num_patches)
@@ -725,9 +729,13 @@ class WSIMILDataset(Dataset):
                     else:
                         return features, label
                 except KeyError as e:
-                    raise KeyError(f"Error accessing data for slide '{slide_id}' in global H5 file: {e}") from e
+                    raise KeyError(
+                        f"Error accessing data for slide '{slide_id}' in global H5 file: {e}"
+                    ) from e
                 except Exception as e:
-                    raise RuntimeError(f"Error loading features for slide '{slide_id}' from global H5 file: {e}") from e
+                    raise RuntimeError(
+                        f"Error loading features for slide '{slide_id}' from global H5 file: {e}"
+                    ) from e
 
             else:  # Fallback to individual H5 files if no global path provided
                 file_path = os.path.join(current_data_dir_path, f"{slide_id}.h5")
@@ -741,7 +749,9 @@ class WSIMILDataset(Dataset):
                     num_patches = features_dset.shape[0]
 
                     if self.n_subsamples > 0 and num_patches > self.n_subsamples:
-                        indices = torch.randperm(num_patches)[: self.n_subsamples].numpy()
+                        indices = torch.randperm(num_patches)[
+                            : self.n_subsamples
+                        ].numpy()
                         indices.sort()
                     else:
                         indices = np.arange(num_patches)
@@ -754,7 +764,9 @@ class WSIMILDataset(Dataset):
                     else:
                         return features, label
                 except OSError as e:
-                    raise OSError(f"HDF5 file not found or corrupted: {file_path}") from e
+                    raise OSError(
+                        f"HDF5 file not found or corrupted: {file_path}"
+                    ) from e
 
     def set_backbone(self, backbone: str) -> None:
         if self.verbose:

@@ -18,7 +18,7 @@ _worker_hdf5_cache_lock = threading.Lock()
 
 # Assuming generate_split and nth are from utils.utils as in original
 # If these are complex, they might need to be part of this class or simplified
-from aegis.utils.generic_utils import (  # Placeholder if this path is correct
+from aegis.utils.generic_utils import (
     generate_split,
     nth,
 )
@@ -236,7 +236,7 @@ class SurvivalDataManager:
                 len(self.survival_bins) < self.n_bins + 1
             ):  # If unique reduced bins too much
                 print(
-                    f"Warning: After unique, number of bins reduced. Consider fewer n_bins or check data distribution."
+                    "Warning: After unique, number of bins reduced. Consider fewer n_bins or check data distribution."
                 )
                 # Fallback to simple linspace if qcut fails badly
                 if len(self.survival_bins) <= 2:
@@ -397,7 +397,7 @@ class SurvivalDataManager:
         print(f"Survival Label Map (bin, event) -> int: {self.survival_label_map}")
         print(f"Number of Combined Survival Classes: {self.num_classes}")
         print(f"Total unique patients in manager: {len(self.patient_df)}")
-        print(f"Patient-level combined label counts:")
+        print("Patient-level combined label counts:")
         print(self.patient_df["label"].value_counts(sort=False))
         if self.omic_features_df is not None:
             print(
@@ -487,7 +487,7 @@ class SurvivalDataManager:
         patch_size: str = "",  # For path .pt features
         cache_enabled: bool = False,
         n_subsamples: int = -1,
-        features_h5_path: Optional[str] = None, # New parameter
+        features_h5_path: Optional[str] = None,  # New parameter
     ) -> Tuple[
         Optional[SurvivalMILDataset],
         Optional[SurvivalMILDataset],
@@ -512,7 +512,7 @@ class SurvivalDataManager:
             "cache_enabled": cache_enabled,
             "n_subsamples": n_subsamples,
             "omic_names_for_coattn": self.omic_names_for_coattn,  # Pass coattn specific omic names
-            "features_h5_path": features_h5_path, # Pass the new parameter
+            "features_h5_path": features_h5_path,  # Pass the new parameter
         }
 
         datasets = []
@@ -621,7 +621,7 @@ class SurvivalDataManager:
 class SurvivalMILDataset(Dataset):
     """
     Dataset for Multiple Instance Learning (MIL) survival analysis tasks.
-    
+
     This dataset works with both batch_size=1 and batch_size>1 when used with
     the appropriate collate function (collate_mil_survival). The collate function
     ensures consistent tensor dimensions:
@@ -629,6 +629,7 @@ class SurvivalMILDataset(Dataset):
     - Omic features: stacked with batch dimension (2D: batch_size, omic_feature_dim)
     - Labels: always have batch dimension (1D: batch_size)
     """
+
     def __init__(
         self,
         patient_data_df: pd.DataFrame,  # DF for patients in this specific split
@@ -688,7 +689,10 @@ class SurvivalMILDataset(Dataset):
                         _worker_hdf5_cache[cache_key] = h5py.File(
                             self.features_h5_path, "r"
                         )
-                        if self.patient_data.iloc[0]["case_id"] == self.patient_data.iloc[0]["slide_id"]: # Check if this is a patient-level H5 file, to avoid duplicate print
+                        if (
+                            self.patient_data.iloc[0]["case_id"]
+                            == self.patient_data.iloc[0]["slide_id"]
+                        ):  # Check if this is a patient-level H5 file, to avoid duplicate print
                             print(
                                 f"Opened global H5 file for SurvivalMILDataset: {self.features_h5_path}"
                             )
@@ -805,15 +809,21 @@ class SurvivalMILDataset(Dataset):
                     try:
                         # Access features within the global H5 file using slide_id as a group key
                         if slide_id not in hdf5_file:
-                            raise KeyError(f"Slide ID '{slide_id}' not found in global H5 file groups.")
-                        
+                            raise KeyError(
+                                f"Slide ID '{slide_id}' not found in global H5 file groups."
+                            )
+
                         slide_group = hdf5_file[slide_id]
                         features = torch.from_numpy(slide_group["features"][:])
                         all_path_features.append(features)
                     except KeyError as e:
-                        raise KeyError(f"Error accessing data for slide '{slide_id}' in global H5 file: {e}") from e
+                        raise KeyError(
+                            f"Error accessing data for slide '{slide_id}' in global H5 file: {e}"
+                        ) from e
                     except Exception as e:
-                        raise RuntimeError(f"Error loading features for slide '{slide_id}' from global H5 file: {e}") from e
+                        raise RuntimeError(
+                            f"Error loading features for slide '{slide_id}' from global H5 file: {e}"
+                        ) from e
                 else:  # Fallback to individual H5 files if no global path provided
                     h5_file_path = os.path.join(
                         current_data_dir_path, "h5_files", f"{slide_id}.h5"
@@ -847,17 +857,17 @@ class SurvivalMILDataset(Dataset):
 
         if not all_path_features:
             return torch.zeros((0, 1))
-        
+
         # Concatenate all features from all slides for this patient
         combined_features = torch.cat(all_path_features, dim=0)
-        
+
         # Sample patches if n_subsamples is specified and bag is larger
         if self.n_subsamples > 0:
             num_patches = combined_features.shape[0]
             if num_patches > self.n_subsamples:
-                indices = torch.randperm(num_patches)[:self.n_subsamples]
+                indices = torch.randperm(num_patches)[: self.n_subsamples]
                 combined_features = combined_features[indices]
-        
+
         return combined_features
 
     def __getitem__(self, idx: int) -> tuple:
