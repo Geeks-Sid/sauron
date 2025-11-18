@@ -24,6 +24,7 @@ def train_fold(
 
     # DataLoaders
     n_subsamples = getattr(args, "n_subsamples", None)
+    features_h5_path = getattr(args, "features_h5_path", None) # Retrieve the new argument
 
     loader_kwargs = {
         "batch_size": args.batch_size,
@@ -34,6 +35,7 @@ def train_fold(
         ),  # Try reducing from 16 to 4 or 8 first
         "pin_memory": True,  # <--- ADD THIS
         "persistent_workers": True,  # <--- ADD THIS (Only works if num_workers > 0)
+        "features_h5_path": features_h5_path, # Pass the new argument
     }
 
     train_loader = get_dataloader(
