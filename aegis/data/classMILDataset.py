@@ -392,6 +392,7 @@ class ClassificationDataManager:
         patch_size: str = "",
         use_hdf5: bool = False,
         cache_enabled: bool = False,
+        n_subsamples: int = -1,
     ) -> Tuple[
         Optional[WSIMILDataset], Optional[WSIMILDataset], Optional[WSIMILDataset]
     ]:
@@ -421,6 +422,7 @@ class ClassificationDataManager:
             "patch_size": patch_size,
             "use_hdf5": use_hdf5,
             "cache_enabled": cache_enabled,
+            "n_subsamples": n_subsamples,
         }
 
         train_dataset = (
@@ -537,6 +539,7 @@ class WSIMILDataset(Dataset):
         patch_size: str = "",
         use_hdf5: bool = False,
         cache_enabled: bool = False,
+        n_subsamples: int = -1,  # Number of patches to sample per bag (-1 means use all)
     ):
         self.slide_data = slide_data_df  # DataFrame for this specific split
         self.data_directory = data_directory
@@ -547,6 +550,7 @@ class WSIMILDataset(Dataset):
         )  # Ensure string
         self.use_hdf5 = use_hdf5
         self.cache_enabled = cache_enabled
+        self.n_subsamples = n_subsamples
         self.data_cache: Dict[str, torch.Tensor] = {}
 
         if not self.use_hdf5 and not self.backbone:
@@ -609,21 +613,24 @@ class WSIMILDataset(Dataset):
 
             cached_features = self.data_cache.get(file_path)
             if cached_features is not None:
-                return cached_features, label
-
-            try:
-                features = torch.load(file_path)
-                if self.cache_enabled:
-                    self.data_cache[file_path] = features
-                return features, label
-            except FileNotFoundError as e:
-                new_error_msg = f"Feature file not found: {file_path}. Check slide_id, backbone, patch_size, and data_directory structure."
-                print(
-                    f"Details: Slide ID='{slide_id}', Backbone='{self.backbone}', Patch Size='{self.patch_size}', Dir='{current_data_dir_path}'"
-                )
-                raise FileNotFoundError(new_error_msg) from e
-            except Exception as e:
-                raise RuntimeError(f"Error loading {file_path}: {e}") from e
+                features = cached_features
+            else:
+                try:
+                    features = torch.load(file_path)
+                    if self.cache_enabled:
+                        self.data_cache[file_path] = features
+                except FileNotFoundError as e:
+                    new_error_msg = f"Feature file not found: {file_path}. Check slide_id, backbone, patch_size, and data_directory structure."
+                    print(
+                        f"Details: Slide ID='{slide_id}', Backbone='{self.backbone}', Patch Size='{self.patch_size}', Dir='{current_data_dir_path}'"
+                    )
+                    raise FileNotFoundError(new_error_msg) from e
+                except Exception as e:
+                    raise RuntimeError(f"Error loading {file_path}: {e}") from e
+            
+            # Sample patches if n_subsamples is specified and bag is larger
+            features = self._sample_patches(features)
+            return features, label
         else:
             file_path = os.path.join(
                 current_data_dir_path, f"{slide_id}.h5"
@@ -635,8 +642,13 @@ class WSIMILDataset(Dataset):
                     # Coordinates are optional, decide if they are always needed
                     if "coords" in hdf5_file:
                         coordinates = hdf5_file["coords"][:]
+                        # Sample features and coordinates together using same indices
+                        features, coordinates = self._sample_patches_with_coords(features, coordinates)
                         return features, label, coordinates
-                    return features, label
+                    else:
+                        # Sample patches if n_subsamples is specified and bag is larger
+                        features = self._sample_patches(features)
+                        return features, label
             except OSError as e:
                 raise OSError(f"HDF5 file not found or corrupted: {file_path}") from e
 
@@ -667,6 +679,53 @@ class WSIMILDataset(Dataset):
         with ThreadPool(num_threads) as pool:
             pool.map(self.__getitem__, indices)
         print("Preloading complete.")
+
+    def _sample_patches(self, features: torch.Tensor) -> torch.Tensor:
+        """
+        Sample a subset of patches from the bag if n_subsamples is specified.
+        
+        Args:
+            features: Tensor of shape (num_patches, feature_dim)
+            
+        Returns:
+            Sampled features tensor of shape (min(num_patches, n_subsamples), feature_dim)
+        """
+        if self.n_subsamples <= 0:
+            return features
+        
+        num_patches = features.shape[0]
+        if num_patches <= self.n_subsamples:
+            return features
+        
+        # Randomly sample n_subsamples patches
+        indices = torch.randperm(num_patches)[:self.n_subsamples]
+        return features[indices]
+    
+    def _sample_patches_with_coords(
+        self, features: torch.Tensor, coordinates: np.ndarray
+    ) -> Tuple[torch.Tensor, np.ndarray]:
+        """
+        Sample a subset of patches and their corresponding coordinates together.
+        
+        Args:
+            features: Tensor of shape (num_patches, feature_dim)
+            coordinates: Array of shape (num_patches, ...)
+            
+        Returns:
+            Tuple of (sampled_features, sampled_coordinates) with matching indices
+        """
+        if self.n_subsamples <= 0:
+            return features, coordinates
+        
+        num_patches = features.shape[0]
+        if num_patches <= self.n_subsamples:
+            return features, coordinates
+        
+        # Randomly sample n_subsamples patches using same indices for both
+        indices = torch.randperm(num_patches)[:self.n_subsamples].numpy()
+        sampled_features = features[indices]
+        sampled_coords = coordinates[indices]
+        return sampled_features, sampled_coords
 
     @property
     def verbose(

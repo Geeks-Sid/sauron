@@ -8,6 +8,7 @@ from einops import rearrange, repeat
 from aegis.utils.generic_utils import initialize_weights
 
 from .activations import get_activation_fn
+from .base_mil import BaseMILModel
 
 # S4DKernel and S4D components (assumed to be correct and kept as is, minor style adjustments)
 # _c2r and _r2c are utility functions for complex numbers, often defined locally or imported
@@ -183,7 +184,7 @@ class S4D(nn.Module):
         return y_output
 
 
-class S4Model(nn.Module):  # S4MIL Wrapper
+class S4Model(BaseMILModel):  # S4MIL Wrapper
     def __init__(
         self,
         in_dim: int,
@@ -194,9 +195,7 @@ class S4Model(nn.Module):  # S4MIL Wrapper
         activation: str = "gelu",  # Activation for FC
         is_survival: bool = False,
     ):
-        super().__init__()
-        self.is_survival = is_survival
-        self.n_classes = n_classes
+        super().__init__(in_dim=in_dim, n_classes=n_classes, is_survival=is_survival)
 
         fc1_layers = [nn.Linear(in_dim, embed_dim)]
         fc1_layers.append(get_activation_fn(activation))
@@ -219,10 +218,8 @@ class S4Model(nn.Module):  # S4MIL Wrapper
         self.classifier = nn.Linear(embed_dim, n_classes)
         self.apply(initialize_weights)
 
-    def forward(self, x: torch.Tensor):
-        # x: (batch_size, num_instances, in_dim)
-        if x.ndim == 2:  # If single bag (num_instances, in_dim)
-            x = x.unsqueeze(0)  # (1, num_instances, in_dim)
+    def _forward_impl(self, x: torch.Tensor):
+        # x: (batch_size, num_instances, in_dim) - already normalized by base class
 
         # Instance feature extraction
         instance_features = self.feature_extractor_fc(

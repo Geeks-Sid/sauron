@@ -23,18 +23,30 @@ def train_fold(
     print(f"Initializing training for fold {cur_fold_num}...")
 
     # DataLoaders
+    n_subsamples = getattr(args, "n_subsamples", None)
+    num_workers = getattr(args, "num_workers", 16)
     train_loader = get_dataloader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         use_weighted_sampler=args.weighted_sample,
         collate_fn_type=args.task_type,
+        n_subsamples=n_subsamples,
+        num_workers=num_workers,
     )
     val_loader = get_dataloader(
-        val_dataset, batch_size=args.batch_size, collate_fn_type=args.task_type
+        val_dataset,
+        batch_size=args.batch_size,
+        collate_fn_type=args.task_type,
+        n_subsamples=n_subsamples,
+        num_workers=num_workers,
     )
     test_loader = get_dataloader(
-        test_dataset, batch_size=args.batch_size, collate_fn_type=args.task_type
+        test_dataset,
+        batch_size=args.batch_size,
+        collate_fn_type=args.task_type,
+        n_subsamples=n_subsamples,
+        num_workers=num_workers,
     )
 
     # Model

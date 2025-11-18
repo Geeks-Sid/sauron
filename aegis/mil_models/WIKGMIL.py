@@ -8,11 +8,12 @@ from torch_geometric.nn import GlobalAttention, global_max_pool, global_mean_poo
 from aegis.utils.generic_utils import initialize_weights
 
 from .activations import get_activation_fn  # Assuming it's in mil_models/
+from .base_mil import BaseMILModel
 
 # torch.autograd.set_detect_anomaly(True) # Should be for debugging, not in library code
 
 
-class WiKG(nn.Module):
+class WiKG(BaseMILModel):
     def __init__(
         self,
         in_dim: int,
@@ -25,9 +26,7 @@ class WiKG(nn.Module):
         activation: str = "leaky_relu",  # Original used LeakyReLU
         is_survival: bool = False,
     ):
-        super().__init__()
-        self.is_survival = is_survival
-        self.n_classes = n_classes
+        super().__init__(in_dim=in_dim, n_classes=n_classes, is_survival=is_survival)
 
         # Using LeakyReLU as per original if specified, else map via get_activation_fn
         if activation.lower() == "leaky_relu":
@@ -87,15 +86,9 @@ class WiKG(nn.Module):
 
         self.apply(initialize_weights)
 
-    def forward(self, x: Union[torch.Tensor, Dict[str, torch.Tensor]]):
-        # x: (batch_size, num_instances, in_dim) or dict {'feature': tensor}
-        if isinstance(x, dict):
-            x = x.get("feature")
-            if x is None:
-                raise ValueError("Input dictionary must contain 'feature' key.")
-
-        if x.ndim == 2:  # Single bag
-            x = x.unsqueeze(0)
+    def _forward_impl(self, x: torch.Tensor):
+        # x: (batch_size, num_instances, in_dim) - already normalized by base class
+        # Note: Base class handles dict inputs, but this model expects tensor
 
         batch_size, num_instances, _ = x.shape
 

@@ -542,3 +542,15 @@ def get_mil_args(parser: argparse.ArgumentParser):
         default=32,
         help="Gradient Accumulation Step.",
     )
+    parser.add_argument(
+        "--n_subsamples",
+        type=int,
+        default=-1,
+        help="Number of patches to sample per bag during training. -1 means use all patches. This is essential for MIL training with large bags.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=16,
+        help="Number of subprocesses to use for data loading. Default is 16 for faster data loading.",
+    )

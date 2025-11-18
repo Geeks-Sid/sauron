@@ -480,6 +480,7 @@ class SurvivalDataManager:
         backbone: Optional[str] = None,  # For path .pt features
         patch_size: str = "",  # For path .pt features
         cache_enabled: bool = False,
+        n_subsamples: int = -1,
     ) -> Tuple[
         Optional[SurvivalMILDataset],
         Optional[SurvivalMILDataset],
@@ -502,6 +503,7 @@ class SurvivalDataManager:
             "backbone": backbone,
             "patch_size": patch_size,
             "cache_enabled": cache_enabled,
+            "n_subsamples": n_subsamples,
             "omic_names_for_coattn": self.omic_names_for_coattn,  # Pass coattn specific omic names
         }
 
@@ -635,6 +637,7 @@ class SurvivalMILDataset(Dataset):
         backbone: Optional[str] = None,
         patch_size: str = "",
         cache_enabled: bool = False,
+        n_subsamples: int = -1,  # Number of patches to sample per bag (-1 means use all)
         omic_features_df_scaled: Optional[
             pd.DataFrame
         ] = None,  # Scaled omic features for this split
@@ -652,6 +655,7 @@ class SurvivalMILDataset(Dataset):
         self.backbone = backbone  # For path .pt features
         self.patch_size = str(patch_size) if patch_size is not None else ""
         self.cache_enabled = cache_enabled
+        self.n_subsamples = n_subsamples
         self.path_features_cache: Dict[
             str, torch.Tensor
         ] = {}  # Cache for loaded slide features
@@ -784,11 +788,20 @@ class SurvivalMILDataset(Dataset):
                 (0, 1)
             )  # Or try to get feature dim if one file was loaded before
 
-        return (
-            torch.cat(all_path_features, dim=0)
-            if all_path_features
-            else torch.zeros((0, 1))
-        )
+        if not all_path_features:
+            return torch.zeros((0, 1))
+        
+        # Concatenate all features from all slides for this patient
+        combined_features = torch.cat(all_path_features, dim=0)
+        
+        # Sample patches if n_subsamples is specified and bag is larger
+        if self.n_subsamples > 0:
+            num_patches = combined_features.shape[0]
+            if num_patches > self.n_subsamples:
+                indices = torch.randperm(num_patches)[:self.n_subsamples]
+                combined_features = combined_features[indices]
+        
+        return combined_features
 
     def __getitem__(self, idx: int) -> tuple:
         patient_row = self.patient_data.iloc[idx]

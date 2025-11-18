@@ -5,9 +5,10 @@ import torch.nn.functional as F
 from aegis.utils.generic_utils import initialize_weights
 
 from .activations import get_activation_fn
+from .base_mil import BaseMILModel
 
 
-class MeanMIL(nn.Module):
+class MeanMIL(BaseMILModel):
     def __init__(
         self,
         in_dim: int,
@@ -17,9 +18,7 @@ class MeanMIL(nn.Module):
         activation: str = "relu",
         is_survival: bool = False,
     ):
-        super().__init__()
-        self.is_survival = is_survival
-        self.n_classes = n_classes
+        super().__init__(in_dim=in_dim, n_classes=n_classes, is_survival=is_survival)
 
         head_layers = [nn.Linear(in_dim, hidden_dim)]
         head_layers.append(get_activation_fn(activation))
@@ -31,11 +30,8 @@ class MeanMIL(nn.Module):
         self.instance_scorer = nn.Sequential(*head_layers)
         self.apply(initialize_weights)
 
-    def forward(self, x: torch.Tensor):
-        # x: (batch_size, num_instances, in_dim)
-        # If single bag (num_instances, in_dim), add batch dim
-        if x.ndim == 2:
-            x = x.unsqueeze(0)
+    def _forward_impl(self, x: torch.Tensor):
+        # x: (batch_size, num_instances, in_dim) - already normalized by base class
 
         # Get instance-level scores/logits
         instance_logits = self.instance_scorer(

@@ -108,6 +108,7 @@ def run_experiment_folds(
             "patch_size": args.patch_size,
             "use_hdf5": getattr(args, "use_hdf5", False),
             "cache_enabled": getattr(args, "preloading", "no").lower() == "yes",
+            "n_subsamples": getattr(args, "n_subsamples", -1),
         }
 
         # Add survival-specific parameters if needed

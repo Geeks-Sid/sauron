@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from aegis.utils.generic_utils import initialize_weights  # Assuming this exists
 
 from .activations import get_activation_fn
+from .base_mil import BaseMILModel
 
 
 class _BaseAttentionMIL(nn.Module):
@@ -51,7 +52,7 @@ class _BaseAttentionMIL(nn.Module):
 
 
 class DAttention(
-    nn.Module
+    BaseMILModel
 ):  # Original DAttention renamed for clarity if _BaseAttentionMIL is used
     def __init__(
         self,
@@ -61,13 +62,10 @@ class DAttention(
         activation: str = "relu",
         is_survival: bool = False,
     ):
-        super().__init__()
+        super().__init__(in_dim=in_dim, n_classes=n_classes, is_survival=is_survival)
         self.embed_dim = 512  # L
-        self.attention_hidden_dim = 128  # D
+        self.attention_hidden_dim = 512  # D
         self.num_attention_outputs = 1  # K
-
-        self.is_survival = is_survival
-        self.n_classes = n_classes
 
         feature_layers = [nn.Linear(in_dim, self.embed_dim)]
         feature_layers.append(get_activation_fn(activation))
@@ -85,20 +83,9 @@ class DAttention(
         )
         self.apply(initialize_weights)
 
-    def forward(self, input_tensor: torch.Tensor):
-        # input_tensor: (batch_size, num_instances, in_dim) or (num_instances, in_dim)
-
-        # Handle both 2D and 3D input tensors
-        if input_tensor.dim() == 2:
-            # If 2D, add batch dimension: (num_instances, in_dim) -> (1, num_instances, in_dim)
-            input_tensor = input_tensor.unsqueeze(0)
-            batch_size = 1
-        elif input_tensor.dim() == 3:
-            batch_size = input_tensor.shape[0]
-        else:
-            raise ValueError(
-                f"Expected input_tensor to be 2D or 3D, got {input_tensor.dim()}D"
-            )
+    def _forward_impl(self, input_tensor: torch.Tensor):
+        # input_tensor: (batch_size, num_instances, in_dim) - already normalized by base class
+        batch_size = input_tensor.shape[0]
 
         instance_features = self.feature_extractor(
             input_tensor

@@ -7,6 +7,8 @@ from einops import rearrange, reduce
 from timm.models.layers import DropPath
 from torch import einsum, nn
 
+from .base_mil import BaseMILModel
+
 # --------------------------------------------------------
 # Modified by Swin@Microsoft
 # --------------------------------------------------------
@@ -1000,14 +1002,17 @@ class RRTEncoder(nn.Module):
         return x
 
 
-class RRT(nn.Module):
+class RRT(BaseMILModel):
     def __init__(
         self,
-        input_dim=1024,
+        in_dim=None,  # Standard parameter name
+        input_dim=1024,  # Original parameter name (for backward compatibility)
         mlp_dim=512,
         act="relu",
         n_classes=2,
-        dropout=0.25,
+        dropout_rate=0.25,  # Standard parameter name
+        dropout=0.25,  # Original parameter name (for backward compatibility)
+        is_survival=False,
         pos_pos=0,
         pos="none",
         peg_k=7,
@@ -1031,7 +1036,13 @@ class RRT(nn.Module):
         qkv_bias=True,
         **kwargs,
     ):
-        super(RRT, self).__init__()
+        # Map standard parameters to original ones
+        if in_dim is not None:
+            input_dim = in_dim
+        if dropout_rate is not None:
+            dropout = dropout_rate
+        
+        super().__init__(in_dim=input_dim, n_classes=n_classes, is_survival=is_survival)
 
         self.patch_to_emb = [nn.Linear(input_dim, 512)]
 
@@ -1081,21 +1092,46 @@ class RRT(nn.Module):
 
         self.apply(initialize_weights)
 
-    def forward(self, x, return_attn=False, no_norm=False):
-        x = self.patch_to_emb(x)  # n*512
-        x = self.dp(x)
-
-        # feature re-embedding
-        x = self.online_encoder(x)
-
-        # feature aggregation
-        if return_attn:
-            x, a = self.pool_fn(x, return_attn=True, no_norm=no_norm)
-        else:
-            x = self.pool_fn(x)
-
-        # prediction
-        logits = self.predictor(x)
+    def _forward_impl(self, x: torch.Tensor):
+        # x: (batch_size, num_instances, in_dim) - already normalized by base class
+        batch_size, num_instances, _ = x.shape
+        
+        # Flatten for processing: (batch_size * num_instances, in_dim)
+        x_flat = x.view(-1, x.shape[-1])
+        
+        # Process through model
+        x_emb = self.patch_to_emb(x_flat)  # (B*N, 512)
+        x_emb = self.dp(x_emb)
+        
+        # Feature re-embedding
+        x_encoded = self.online_encoder(x_emb)  # (B*N, final_dim)
+        
+        # Reshape back to batch structure: (batch_size, num_instances, final_dim)
+        x_encoded = x_encoded.view(batch_size, num_instances, -1)
+        
+        # Feature aggregation - process each bag
+        bag_reprs = []
+        for b in range(batch_size):
+            bag_features = x_encoded[b]  # (N, final_dim)
+            # Pool function expects (N, final_dim) -> (1, final_dim) or (final_dim,)
+            if isinstance(self.pool_fn, nn.AdaptiveAvgPool1d):
+                # For AdaptiveAvgPool1d, need to transpose: (N, D) -> (D, N) -> (D, 1) -> (D,)
+                bag_repr = self.pool_fn(bag_features.transpose(0, 1).unsqueeze(0)).squeeze(-1).squeeze(0)
+            else:
+                # For DAttention, expects (N, D) -> (1, D) -> (D,)
+                bag_repr = self.pool_fn(bag_features).squeeze(0)
+            bag_reprs.append(bag_repr)
+        
+        # Stack: (batch_size, final_dim)
+        bag_reprs = torch.stack(bag_reprs)
+        
+        # Prediction
+        logits = self.predictor(bag_reprs)  # (batch_size, n_classes)
+        
+        # RRT originally returns (hazards, S) for survival
+        # Base class will standardize this
         hazards = torch.sigmoid(logits)
-        S = torch.cumprod(1 - hazards, dim=1)
-        return hazards, S
+        survival_curves = torch.cumprod(1 - hazards, dim=1)
+        
+        # Return in standard format - base class will handle standardization
+        return hazards, survival_curves

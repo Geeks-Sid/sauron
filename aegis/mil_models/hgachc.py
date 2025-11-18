@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from aegis.utils.generic_utils import initialize_weights
 
 from .activations import get_activation_fn
+from .base_mil import BaseMILModel
 
 
 class GatedLinear(nn.Module):
@@ -19,7 +20,7 @@ class GatedLinear(nn.Module):
         return torch.tanh(self.gate(x)) * self.linear(x)
 
 
-class HGACrossHeadCom(nn.Module):
+class HGACrossHeadCom(BaseMILModel):
     def __init__(
         self,
         in_dim: int,
@@ -30,12 +31,10 @@ class HGACrossHeadCom(nn.Module):
         activation: str = "relu",
         is_survival: bool = False,
     ):
-        super().__init__()
+        super().__init__(in_dim=in_dim, n_classes=n_classes, is_survival=is_survival)
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = self.embed_dim // self.num_heads
-        self.is_survival = is_survival
-        self.n_classes = n_classes
 
         if self.embed_dim % self.num_heads != 0:
             raise ValueError("embed_dim must be divisible by num_heads")
@@ -64,7 +63,7 @@ class HGACrossHeadCom(nn.Module):
         self.classifier = nn.Linear(self.embed_dim, n_classes)
         self.apply(initialize_weights)
 
-    def forward(self, x: torch.Tensor):
+    def _forward_impl(self, x: torch.Tensor):
         batch_size, num_instances, _ = x.size()
 
         instance_features = self.feature_extractor(x)

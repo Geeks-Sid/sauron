@@ -1,13 +1,9 @@
 import collections
-import math
-import os
 from typing import Iterator, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn  # Not used in this snippet, but kept if other utils in file use it
-import torch.optim as optim  # Not used in this snippet
 from torch.utils.data import (
     DataLoader,
     Dataset,  # Added for type hinting
@@ -168,12 +164,18 @@ def collate_mil_features(
     batch: List[
         Tuple[torch.Tensor, int]
     ],  # Assumes batch item is (features_tensor, label_int)
+    n_subsamples: Optional[
+        int
+    ] = None,  # If provided, pad to this instead of max_instances
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Collate function for MIL when batch items are (Tensor_Features, Label_Int).
     Handles both batch_size=1 and batch_size>1 consistently.
     Always returns 3D tensor: (batch_size, max_instances, feature_dim) for features.
     Labels are converted to a LongTensor.
+
+    If n_subsamples is provided and > 0, pads all bags to n_subsamples instead of max_instances.
+    This prevents excessive padding when using patch sampling.
     """
     # Filter out None items if any dataset returns None (e.g. for failed loads, though ideally handled in Dataset)
     # batch = [item for item in batch if item is not None and item[0] is not None]
@@ -187,30 +189,45 @@ def collate_mil_features(
     try:
         features_list = [item[0] for item in batch]
         labels = torch.tensor([item[1] for item in batch], dtype=torch.long)
-        
+
         # Handle both batch_size=1 and batch_size>1 consistently
         # Always return 3D tensor: (batch_size, max_instances, feature_dim)
-        # Find max number of instances
-        max_instances = max(feat.shape[0] for feat in features_list)
+        # Determine target number of instances for padding
+        max_instances_in_batch = max(feat.shape[0] for feat in features_list)
         feature_dim = features_list[0].shape[1]
-        
+
+        # If n_subsamples is provided and > 0, use it as the padding target
+        # Otherwise, use the max instances in the batch (backward compatible)
+        if n_subsamples is not None and n_subsamples > 0:
+            target_instances = n_subsamples
+        else:
+            target_instances = max_instances_in_batch
+
         # Pad and stack
         padded_features = []
         for feat in features_list:
-            if feat.shape[0] < max_instances:
+            if feat.shape[0] < target_instances:
                 # Pad with zeros
-                padding = torch.zeros(max_instances - feat.shape[0], feature_dim, dtype=feat.dtype, device=feat.device)
+                padding = torch.zeros(
+                    target_instances - feat.shape[0],
+                    feature_dim,
+                    dtype=feat.dtype,
+                    device=feat.device,
+                )
                 feat = torch.cat([feat, padding], dim=0)
+            elif feat.shape[0] > target_instances:
+                # Truncate if somehow we have more than target (shouldn't happen if sampling works correctly)
+                feat = feat[:target_instances]
             padded_features.append(feat)
-        
-        # Stack into 3D tensor: (batch_size, max_instances, feature_dim)
+
+        # Stack into 3D tensor: (batch_size, target_instances, feature_dim)
         # This works for both batch_size=1 and batch_size>1
         features = torch.stack(padded_features, dim=0)
     except Exception as e:
         print("Error during collation (collate_mil_features):")
         for i, item in enumerate(batch):
             print(
-                f"  Item {i}: type={type(item)}, len={len(item) if isinstance(item, (tuple,list)) else 'N/A'}"
+                f"  Item {i}: type={type(item)}, len={len(item) if isinstance(item, (tuple, list)) else 'N/A'}"
             )
             if isinstance(item, (tuple, list)) and len(item) > 0:
                 print(
@@ -311,6 +328,9 @@ def get_dataloader(  # Renamed from get_split_loader for generality
     num_workers: int = 4,
     pin_memory: bool = True,
     collate_fn_type: str = "classification",  # "classification" or "survival"
+    n_subsamples: Optional[
+        int
+    ] = None,  # If provided, pass to collate function for padding
     # Removed `testing` flag, as subset sampling is usually for debugging/prototyping
     # and can be handled by passing a Subset of the dataset if needed.
     # device: Optional[torch.device] = None, # Not strictly needed for DataLoader creation
@@ -372,8 +392,14 @@ def get_dataloader(  # Renamed from get_split_loader for generality
         sampler = SequentialSampler(dataset)
 
     # Select collate_fn based on type
+    # If n_subsamples is not provided, try to get it from the dataset
+    if n_subsamples is None and hasattr(dataset, "n_subsamples"):
+        n_subsamples = dataset.n_subsamples
+
     if collate_fn_type.lower() == "classification":
-        collate_function = collate_mil_features
+        # Create a collate function with n_subsamples captured
+        def collate_function(batch):
+            return collate_mil_features(batch, n_subsamples=n_subsamples)
     elif collate_fn_type.lower() == "survival":
         collate_function = collate_mil_survival
     else:

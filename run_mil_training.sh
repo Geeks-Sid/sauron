@@ -1,5 +1,30 @@
 #!/bin/bash
 # Script to run MIL training with specified parameters
+#
+# NOTE: If using mambamil model, ensure mamba-ssm is installed:
+#   pip install mamba-ssm
+#   or
+#   pip install causal-conv1d>=1.2.0
+#   (CUDA extensions will be compiled automatically)
+#
+# Available MIL model types (--model_type):
+#   - att_mil        : Attention-based MIL (ABMIL/DAttention)
+#   - trans_mil       : Transformer-based MIL (TransMIL)
+#   - max_mil         : Max pooling MIL
+#   - mean_mil        : Mean pooling MIL
+#   - s4model         : S4-based MIL
+#   - wikgmil         : WiKG (Graph-based MIL)
+#   - diffabmil       : Differentiable Attention MIL
+#   - hgachc          : Hierarchical Graph Attention Cross-Head Communication
+#   - rrtmil          : RRT (Region-based Transformer MIL)
+#   - dsmil           : Dual-stream MIL
+#   - mambamil        : Mamba-based MIL (supports SRMamba, Mamba, BiMamba)
+#   - moemil          : Mixture of Experts MIL
+#
+# Model-specific parameters:
+#   - mambamil: --mamba_layers (default: 2), --mamba_rate (default: 10), --mamba_type (SRMamba/Mamba/BiMamba)
+#   - moemil: --embed_dim (default: 512), --num_experts (default: 4)
+#   - trans_mil, att_mil, max_mil, mean_mil, s4model: --activation (relu/gelu, default varies by model)
 
 set -e  # Exit on error
 
@@ -26,15 +51,15 @@ python -u train_mil_run.py \
     --task multiclass \
     --task_type classification \
     --exp_code tcga_ot_multiclass_s1 \
-    --seed 1 \
+    --seed 42 \
     --log_data \
     --testing \
     --k 1 \
     --k_start 0 \
     --k_end 1 \
-    --model_type mambamil \
-    --backbone resnet50 \
-    --in_dim 1024 \
+    --model_type att_mil \
+    --backbone uni_v2 \
+    --in_dim 1536 \
     --max_epochs 200 \
     --lr 1e-4 \
     --reg 1e-5 \
@@ -42,5 +67,13 @@ python -u train_mil_run.py \
     --drop_out 0.25 \
     --early_stopping \
     --weighted_sample \
-    --batch_size 2 \
-    --use_hdf5
+    --batch_size 16 \
+    --use_hdf5 \
+    --n_subsamples 2048 \
+    --num_workers 16
+
+# Example: To use a different model, change --model_type:
+# --model_type trans_mil --activation gelu
+# --model_type att_mil --activation relu
+# --model_type moemil --embed_dim 512 --num_experts 4
+# --model_type mambamil --mamba_layers 2 --mamba_rate 10 --mamba_type SRMamba

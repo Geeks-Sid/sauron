@@ -8,6 +8,7 @@ from torch import einsum
 from aegis.utils.generic_utils import initialize_weights  # Keep if used elsewhere
 
 from .activations import get_activation_fn
+from .base_mil import BaseMILModel
 
 
 # --- Nystrom Attention and Transformer Components (largely kept as is) ---
@@ -354,7 +355,7 @@ class PPEG(nn.Module):  # Positional Pixel Embedding Generator
         return x_out
 
 
-class TransMIL(nn.Module):
+class TransMIL(BaseMILModel):
     def __init__(
         self,
         in_dim: int,
@@ -366,9 +367,7 @@ class TransMIL(nn.Module):
         activation: str = "gelu",
         is_survival: bool = False,
     ):
-        super().__init__()
-        self.is_survival = is_survival
-        self.n_classes = n_classes
+        super().__init__(in_dim=in_dim, n_classes=n_classes, is_survival=is_survival)
 
         fc1_layers = [nn.Linear(in_dim, embed_dim)]
         fc1_layers.append(get_activation_fn(activation))
@@ -400,10 +399,8 @@ class TransMIL(nn.Module):
         self.classifier = nn.Linear(embed_dim, n_classes)
         self.apply(initialize_weights)  # Assuming custom weight init
 
-    def forward(self, x: torch.Tensor):
-        # x: (batch_size, num_instances, in_dim)
-        if x.ndim == 2:  # Single bag
-            x = x.unsqueeze(0)
+    def _forward_impl(self, x: torch.Tensor):
+        # x: (batch_size, num_instances, in_dim) - already normalized by base class
         batch_size = x.shape[0]
 
         instance_features = self.feature_extractor_fc(x.float())  # (B, N, embed_dim)

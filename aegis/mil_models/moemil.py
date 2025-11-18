@@ -3,9 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from aegis.utils.generic_utils import initialize_weights
+from .base_mil import BaseMILModel
 
 
-class MoEMIL(nn.Module):
+class MoEMIL(BaseMILModel):
     """
     Instance-Gated Mixture of Experts for Multiple Instance Learning (IG-MoE-MIL).
 
@@ -23,11 +24,9 @@ class MoEMIL(nn.Module):
         dropout_rate: float = 0.25,
         is_survival: bool = False,
     ):
-        super().__init__()
+        super().__init__(in_dim=in_dim, n_classes=n_classes, is_survival=is_survival)
         self.embed_dim = embed_dim
         self.num_experts = num_experts
-        self.n_classes = n_classes
-        self.is_survival = is_survival
 
         # Gating Network: Decides which expert to use for each instance
         # Takes an instance and outputs a probability distribution over the experts.
@@ -58,8 +57,8 @@ class MoEMIL(nn.Module):
         self.classifier = nn.Linear(self.embed_dim, self.n_classes)
         self.apply(initialize_weights)
 
-    def forward(self, x: torch.Tensor):
-        # x: (batch_size, num_instances, in_dim)
+    def _forward_impl(self, x: torch.Tensor):
+        # x: (batch_size, num_instances, in_dim) - already normalized by base class
         batch_size, num_instances, in_dim = x.shape
 
         # Flatten all instances to process them in one go

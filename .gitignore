@@ -171,3 +171,5 @@ Data/*.csv
 results/*
 dummy_slides.csv
 aegis/utils/wsi-detailed-report.csv
+aegis/mil_models/csrc/
+aegis/mil_models/mamba_ssm/

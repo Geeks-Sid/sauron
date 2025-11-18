@@ -5,12 +5,12 @@ from aegis.mil_models.ABMIL import DAttention
 from aegis.mil_models.DiffABMIL import DifferentiableAttentionMIL
 from aegis.mil_models.dsmil import DSMIL
 from aegis.mil_models.hgachc import HGACrossHeadCom
+from aegis.mil_models.mambaMIL import MambaMIL
 from aegis.mil_models.MaxMIL import MaxMIL
 from aegis.mil_models.MeanMIL import MeanMIL
+from aegis.mil_models.moemil import MoEMIL
 from aegis.mil_models.rrtmil import RRT as rrtmil
-from aegis.mil_models.S4MIL import (
-    S4Model,  # Assuming S4Model is the class name in S4MIL.py
-)
+from aegis.mil_models.S4MIL import S4Model
 from aegis.mil_models.TransMIL import TransMIL
 from aegis.mil_models.WIKGMIL import WiKG
 
@@ -51,7 +51,7 @@ def mil_model_factory(args, in_dim=None):
         return TransMIL(
             in_dim=in_dim,
             n_classes=args.n_classes,
-            dropout=args.drop_out,
+            dropout_rate=args.drop_out,
             activation=getattr(args, "activation", "gelu"),
             is_survival=is_survival_task,
         )
@@ -111,6 +111,26 @@ def mil_model_factory(args, in_dim=None):
         return DSMIL(
             in_dim=in_dim,
             n_classes=args.n_classes,
+            dropout_rate=args.drop_out,
+            is_survival=is_survival_task,
+        )
+    elif model_type == "mambamil":
+        return MambaMIL(
+            in_dim=in_dim,
+            n_classes=args.n_classes,
+            dropout_rate=args.drop_out,
+            activation=getattr(args, "activation", "relu"),
+            is_survival=is_survival_task,
+            layer=getattr(args, "mamba_layers", 2),
+            rate=getattr(args, "mamba_rate", 10),
+            type=getattr(args, "mamba_type", "SRMamba"),
+        )
+    elif model_type == "moemil":
+        return MoEMIL(
+            in_dim=in_dim,
+            n_classes=args.n_classes,
+            embed_dim=getattr(args, "embed_dim", 512),
+            num_experts=getattr(args, "num_experts", 4),
             dropout_rate=args.drop_out,
             is_survival=is_survival_task,
         )
