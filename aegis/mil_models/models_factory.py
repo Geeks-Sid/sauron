@@ -5,7 +5,6 @@ from aegis.mil_models.ABMIL import DAttention
 from aegis.mil_models.DiffABMIL import DifferentiableAttentionMIL
 from aegis.mil_models.dsmil import DSMIL
 from aegis.mil_models.hgachc import HGACrossHeadCom
-from aegis.mil_models.mambaMIL import MambaMIL
 from aegis.mil_models.MaxMIL import MaxMIL
 from aegis.mil_models.MeanMIL import MeanMIL
 from aegis.mil_models.moemil import MoEMIL
@@ -114,17 +113,7 @@ def mil_model_factory(args, in_dim=None):
             dropout_rate=args.drop_out,
             is_survival=is_survival_task,
         )
-    elif model_type == "mambamil":
-        return MambaMIL(
-            in_dim=in_dim,
-            n_classes=args.n_classes,
-            dropout_rate=args.drop_out,
-            activation=getattr(args, "activation", "relu"),
-            is_survival=is_survival_task,
-            layer=getattr(args, "mamba_layers", 2),
-            rate=getattr(args, "mamba_rate", 10),
-            type=getattr(args, "mamba_type", "SRMamba"),
-        )
+
     elif model_type == "moemil":
         return MoEMIL(
             in_dim=in_dim,

@@ -1,6 +1,7 @@
 import argparse
 import glob
 import os
+import traceback
 
 import h5py
 from tqdm import tqdm
@@ -10,20 +11,42 @@ def copy_h5_object(src_obj, dest_group, name):
     """
     Recursively copy an HDF5 object (dataset or group) from source to destination.
     Handles nested groups properly.
+    Always reads and writes data explicitly to ensure complete copying.
     """
     if isinstance(src_obj, h5py.Dataset):
-        # Copy dataset using h5py's copy method
-        try:
-            dest_group.copy(src_obj, name)
-        except Exception:
-            # Fallback: read data and create new dataset
-            data = src_obj[...]
-            dset = dest_group.create_dataset(
-                name, data=data, compression=src_obj.compression
-            )
-            # Copy attributes
-            for attr_name in src_obj.attrs.keys():
-                dset.attrs[attr_name] = src_obj.attrs[attr_name]
+        # Read all data explicitly to ensure complete copy
+        data = src_obj[...]
+
+        # Get dataset properties
+        compression = src_obj.compression
+        compression_opts = (
+            src_obj.compression_opts if src_obj.compression_opts else None
+        )
+        chunks = src_obj.chunks
+        dtype = src_obj.dtype
+
+        # Create new dataset with same properties
+        # Note: shape is inferred from data, so we don't specify it explicitly
+        create_kwargs = {
+            "name": name,
+            "data": data,
+            "dtype": dtype,
+        }
+
+        # Only add optional parameters if they are set
+        if compression is not None:
+            create_kwargs["compression"] = compression
+            if compression_opts is not None:
+                create_kwargs["compression_opts"] = compression_opts
+        if chunks is not None:
+            create_kwargs["chunks"] = chunks
+
+        dset = dest_group.create_dataset(**create_kwargs)
+
+        # Copy all attributes
+        for attr_name in src_obj.attrs.keys():
+            dset.attrs[attr_name] = src_obj.attrs[attr_name]
+
     elif isinstance(src_obj, h5py.Group):
         # Create a new group and recursively copy its contents
         new_group = dest_group.create_group(name)
@@ -65,14 +88,26 @@ def combine_h5(source_dir, output_file):
 
                     # Copy all objects (datasets and groups) from source file
                     # Use recursive copy to handle nested structures properly
-                    for key in src_h5.keys():
+                    source_keys = list(src_h5.keys())
+                    copied_keys = []
+
+                    for key in source_keys:
                         try:
                             copy_h5_object(src_h5[key], grp, key)
+                            copied_keys.append(key)
                         except Exception as copy_error:
                             print(
-                                f"  Warning: Failed to copy '{key}' from {file_name}: {copy_error}"
+                                f"  ERROR: Failed to copy '{key}' from {file_name}: {copy_error}"
                             )
+                            traceback.print_exc()
                             # Continue with other keys even if one fails
+
+                    # Verify all keys were copied
+                    if len(copied_keys) != len(source_keys):
+                        missing = set(source_keys) - set(copied_keys)
+                        print(
+                            f"  WARNING: {len(missing)} keys not copied from {file_name}: {missing}"
+                        )
 
             except OSError as e:
                 print(f"Error: Cannot open {file_name} - file may be corrupted: {e}")
