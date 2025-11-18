@@ -203,26 +203,21 @@ def collate_mil_features(
         else:
             target_instances = max_instances_in_batch
 
-        # Pad and stack
-        padded_features = []
-        for feat in features_list:
-            if feat.shape[0] < target_instances:
-                # Pad with zeros
-                padding = torch.zeros(
-                    target_instances - feat.shape[0],
-                    feature_dim,
-                    dtype=feat.dtype,
-                    device=feat.device,
-                )
-                feat = torch.cat([feat, padding], dim=0)
-            elif feat.shape[0] > target_instances:
-                # Truncate if somehow we have more than target (shouldn't happen if sampling works correctly)
-                feat = feat[:target_instances]
-            padded_features.append(feat)
+        # Pad and stack - optimized version
+        # Pre-allocate output tensor for better memory efficiency
+        batch_size = len(features_list)
+        features = torch.zeros(
+            batch_size,
+            target_instances,
+            feature_dim,
+            dtype=features_list[0].dtype,
+            device=features_list[0].device,
+        )
 
-        # Stack into 3D tensor: (batch_size, target_instances, feature_dim)
-        # This works for both batch_size=1 and batch_size>1
-        features = torch.stack(padded_features, dim=0)
+        for i, feat in enumerate(features_list):
+            num_instances = min(feat.shape[0], target_instances)
+            features[i, :num_instances] = feat[:num_instances]
+            # Remaining positions are already zeros from initialization
     except Exception as e:
         print("Error during collation (collate_mil_features):")
         for i, item in enumerate(batch):
@@ -416,4 +411,10 @@ def get_dataloader(  # Renamed from get_split_loader for generality
         num_workers=current_num_workers,
         pin_memory=current_pin_memory,
         drop_last=False,  # Typically False for MIL unless batch_size > 1 and partial batches are an issue
+        persistent_workers=True
+        if current_num_workers > 0
+        else False,  # Keep workers alive between epochs to reduce overhead
+        prefetch_factor=4
+        if current_num_workers > 0
+        else 2,  # Increase prefetch to keep GPU fed (default is 2)
     )

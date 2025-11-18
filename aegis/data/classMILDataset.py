@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from typing import Dict, List, Optional, Tuple, Union
 
 import h5py
@@ -10,6 +11,11 @@ import torch
 from scipy.stats import mode
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from torch.utils.data import Dataset
+
+# Worker-local HDF5 file handle cache to avoid opening/closing files repeatedly
+# This is shared across all dataset instances in the same worker process
+_worker_hdf5_cache: Dict[str, h5py.File] = {}
+_worker_hdf5_cache_lock = threading.Lock()
 
 
 class ClassificationDataManager:
@@ -552,6 +558,7 @@ class WSIMILDataset(Dataset):
         self.cache_enabled = cache_enabled
         self.n_subsamples = n_subsamples
         self.data_cache: Dict[str, torch.Tensor] = {}
+        self.verbose = True  # Add verbose flag if not present
 
         if not self.use_hdf5 and not self.backbone:
             print(
@@ -635,20 +642,27 @@ class WSIMILDataset(Dataset):
             file_path = os.path.join(
                 current_data_dir_path, f"{slide_id}.h5"
             )
-            # HDF5 typically isn't cached in memory this way due to size, but could be if small
+            # Use worker-local HDF5 file handle cache to avoid opening/closing on every access
+            # This significantly reduces I/O overhead in multiprocessing DataLoader workers
             try:
-                with h5py.File(file_path, "r") as hdf5_file:
-                    features = torch.from_numpy(hdf5_file["features"][:])
-                    # Coordinates are optional, decide if they are always needed
-                    if "coords" in hdf5_file:
-                        coordinates = hdf5_file["coords"][:]
-                        # Sample features and coordinates together using same indices
-                        features, coordinates = self._sample_patches_with_coords(features, coordinates)
-                        return features, label, coordinates
-                    else:
-                        # Sample patches if n_subsamples is specified and bag is larger
-                        features = self._sample_patches(features)
-                        return features, label
+                # Check if file handle is already open in this worker
+                with _worker_hdf5_cache_lock:
+                    if file_path not in _worker_hdf5_cache:
+                        _worker_hdf5_cache[file_path] = h5py.File(file_path, "r")
+                    hdf5_file = _worker_hdf5_cache[file_path]
+                
+                # Read features (file handle stays open for subsequent accesses)
+                features = torch.from_numpy(hdf5_file["features"][:])
+                # Coordinates are optional, decide if they are always needed
+                if "coords" in hdf5_file:
+                    coordinates = hdf5_file["coords"][:]
+                    # Sample features and coordinates together using same indices
+                    features, coordinates = self._sample_patches_with_coords(features, coordinates)
+                    return features, label, coordinates
+                else:
+                    # Sample patches if n_subsamples is specified and bag is larger
+                    features = self._sample_patches(features)
+                    return features, label
             except OSError as e:
                 raise OSError(f"HDF5 file not found or corrupted: {file_path}") from e
 

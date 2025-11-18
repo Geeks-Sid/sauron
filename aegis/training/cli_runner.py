@@ -53,8 +53,7 @@ def run_experiment_folds(
     # For ClassificationDataManager:
     if args.task_type.lower() == "classification":
         data_manager.create_k_fold_splits(
-            num_folds=args.k,
-            test_set_size=getattr(args, "test_frac", 0.1)
+            num_folds=args.k, test_set_size=getattr(args, "test_frac", 0.1)
         )
         num_actual_folds = data_manager.get_number_of_folds()
         if num_actual_folds == 0 and args.k > 0:  # No k-folds, but test set might exist

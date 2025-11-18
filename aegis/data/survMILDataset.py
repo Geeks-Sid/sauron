@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from typing import Dict, List, Optional, Tuple, Union
 
 import h5py  # For potential H5 feature loading
@@ -9,6 +10,11 @@ import pandas as pd
 import torch
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset
+
+# Worker-local HDF5 file handle cache to avoid opening/closing files repeatedly
+# This is shared across all dataset instances in the same worker process
+_worker_hdf5_cache: Dict[str, h5py.File] = {}
+_worker_hdf5_cache_lock = threading.Lock()
 
 # Assuming generate_split and nth are from utils.utils as in original
 # If these are complex, they might need to be part of this class or simplified
@@ -767,9 +773,13 @@ class SurvivalMILDataset(Dataset):
                     current_data_dir_path, "h5_files", f"{slide_id}.h5"
                 )
                 try:
-                    with h5py.File(h5_file_path, "r") as hf:
-                        features = torch.from_numpy(hf["features"][:])
-                        all_path_features.append(features)
+                    # Use worker-local HDF5 file handle cache to avoid opening/closing on every access
+                    with _worker_hdf5_cache_lock:
+                        if h5_file_path not in _worker_hdf5_cache:
+                            _worker_hdf5_cache[h5_file_path] = h5py.File(h5_file_path, "r")
+                        hf = _worker_hdf5_cache[h5_file_path]
+                    features = torch.from_numpy(hf["features"][:])
+                    all_path_features.append(features)
                 except OSError:
                     raise OSError(
                         f"HDF5 file not found or corrupted for slide {slide_id} at {h5_file_path}"
