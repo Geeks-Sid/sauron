@@ -81,6 +81,11 @@ def train_fold(
             save_dir=experiment_base_results_dir, name="logs"
         ),
         log_every_n_steps=10,
+        profiler="simple",
+        fast_dev_run=True,
+        limit_train_batches=16,
+        limit_val_batches=1,
+        limit_test_batches=0,
     )
 
     # Training

@@ -98,8 +98,9 @@ python -u train_mil_run.py \
     --opt adam \
     --drop_out 0.25 \
     --early_stopping \
+    --preloading no \
     --weighted_sample \
-    --batch_size 16 \
+    --batch_size 4 \
     --use_hdf5 \
     --n_subsamples 2048 \
     

@@ -350,9 +350,7 @@ def get_dataloader(  # Renamed from get_split_loader for generality
     """
     # Determine if CUDA is available and adjust defaults if necessary
     on_gpu = torch.cuda.is_available()
-    current_num_workers = (
-        num_workers if on_gpu else 0
-    )  # Often set to 0 for CPU for simplicity
+    current_num_workers = num_workers  # Often set to 0 for CPU for simplicity
     current_pin_memory = pin_memory if on_gpu else False
 
     sampler: Optional[Sampler] = None
@@ -403,7 +401,7 @@ def get_dataloader(  # Renamed from get_split_loader for generality
             "Choose 'classification' or 'survival'."
         )
 
-    return DataLoader(
+    loader = DataLoader(
         dataset,
         batch_size=batch_size,
         sampler=sampler,
@@ -414,7 +412,20 @@ def get_dataloader(  # Renamed from get_split_loader for generality
         persistent_workers=True
         if current_num_workers > 0
         else False,  # Keep workers alive between epochs to reduce overhead
-        prefetch_factor=4
+        prefetch_factor=16
         if current_num_workers > 0
         else 2,  # Increase prefetch to keep GPU fed (default is 2)
     )
+
+    print("DataLoader created successfully.")
+    print("DataLoader parameters:")
+    print(f"  batch_size: {loader.batch_size}")
+    print(f"  sampler: {loader.sampler}")
+    print(f"  collate_fn: {loader.collate_fn}")
+    print(f"  num_workers: {loader.num_workers}")
+    print(f"  pin_memory: {loader.pin_memory}")
+    print("  drop_last: False")
+    print("  persistent_workers: True if loader.num_workers > 0 else False")
+    print("  prefetch_factor: 16 if loader.num_workers > 0 else 2")
+    print(f"  dataset: {loader.dataset}")
+    return loader
