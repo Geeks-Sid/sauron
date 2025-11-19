@@ -12,6 +12,12 @@ from scipy.stats import mode
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from torch.utils.data import Dataset
 
+# Import memmap dataset for conditional use
+try:
+    from aegis.data.memmapMILDataset import MemmapDataset
+except ImportError:
+    MemmapDataset = None
+
 # Worker-local HDF5 file handle cache to avoid opening/closing files repeatedly
 # This is shared across all dataset instances in the same worker process
 _worker_hdf5_cache: Dict[str, h5py.File] = {}
@@ -423,6 +429,8 @@ class ClassificationDataManager:
         cache_enabled: bool = False,
         n_subsamples: int = -1,
         features_h5_path: Optional[str] = None,  # New parameter
+        memmap_bin_path: Optional[str] = None,  # Path to memmap binary file
+        memmap_json_path: Optional[str] = None,  # Path to memmap index JSON file
     ) -> Tuple[
         Optional[WSIMILDataset], Optional[WSIMILDataset], Optional[WSIMILDataset]
     ]:
@@ -445,32 +453,75 @@ class ClassificationDataManager:
             drop=True
         )
 
-        common_params = {
-            "data_directory": self.data_directory,
-            "num_classes": self.num_classes,
-            "backbone": backbone,
-            "patch_size": patch_size,
-            "use_hdf5": use_hdf5,
-            "cache_enabled": cache_enabled,
-            "n_subsamples": n_subsamples,
-            "features_h5_path": features_h5_path,  # Pass the new parameter
-        }
+        # Check if memmap paths are provided
+        use_memmap = memmap_bin_path is not None and memmap_json_path is not None
 
-        train_dataset = (
-            WSIMILDataset(slide_data_df=train_df_split, **common_params)
-            if not train_df_split.empty
-            else None
-        )
-        val_dataset = (
-            WSIMILDataset(slide_data_df=val_df_split, **common_params)
-            if not val_df_split.empty
-            else None
-        )
-        test_dataset = (
-            WSIMILDataset(slide_data_df=test_df_split, **common_params)
-            if not test_df_split.empty
-            else None
-        )
+        if use_memmap:
+            # Use MemmapDataset
+            if MemmapDataset is None:
+                raise ImportError(
+                    "MemmapDataset not available. "
+                    "Ensure aegis.data.memmapMILDataset is properly imported."
+                )
+
+            train_dataset = (
+                MemmapDataset(
+                    bin_path=memmap_bin_path,
+                    json_path=memmap_json_path,
+                    slide_data_df=train_df_split,
+                    n_subsamples=n_subsamples if n_subsamples > 0 else 2048,
+                )
+                if not train_df_split.empty
+                else None
+            )
+            val_dataset = (
+                MemmapDataset(
+                    bin_path=memmap_bin_path,
+                    json_path=memmap_json_path,
+                    slide_data_df=val_df_split,
+                    n_subsamples=n_subsamples if n_subsamples > 0 else 2048,
+                )
+                if not val_df_split.empty
+                else None
+            )
+            test_dataset = (
+                MemmapDataset(
+                    bin_path=memmap_bin_path,
+                    json_path=memmap_json_path,
+                    slide_data_df=test_df_split,
+                    n_subsamples=n_subsamples if n_subsamples > 0 else 2048,
+                )
+                if not test_df_split.empty
+                else None
+            )
+        else:
+            # Use original WSIMILDataset
+            common_params = {
+                "data_directory": self.data_directory,
+                "num_classes": self.num_classes,
+                "backbone": backbone,
+                "patch_size": patch_size,
+                "use_hdf5": use_hdf5,
+                "cache_enabled": cache_enabled,
+                "n_subsamples": n_subsamples,
+                "features_h5_path": features_h5_path,  # Pass the new parameter
+            }
+
+            train_dataset = (
+                WSIMILDataset(slide_data_df=train_df_split, **common_params)
+                if not train_df_split.empty
+                else None
+            )
+            val_dataset = (
+                WSIMILDataset(slide_data_df=val_df_split, **common_params)
+                if not val_df_split.empty
+                else None
+            )
+            test_dataset = (
+                WSIMILDataset(slide_data_df=test_df_split, **common_params)
+                if not test_df_split.empty
+                else None
+            )
 
         return train_dataset, val_dataset, test_dataset
 
