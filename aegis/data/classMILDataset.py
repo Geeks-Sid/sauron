@@ -428,7 +428,6 @@ class ClassificationDataManager:
         use_hdf5: bool = False,
         cache_enabled: bool = False,
         n_subsamples: int = -1,
-        features_h5_path: Optional[str] = None,  # New parameter
         memmap_bin_path: Optional[str] = None,  # Path to memmap binary file
         memmap_json_path: Optional[str] = None,  # Path to memmap index JSON file
     ) -> Tuple[
@@ -504,7 +503,6 @@ class ClassificationDataManager:
                 "use_hdf5": use_hdf5,
                 "cache_enabled": cache_enabled,
                 "n_subsamples": n_subsamples,
-                "features_h5_path": features_h5_path,  # Pass the new parameter
             }
 
             train_dataset = (
@@ -623,9 +621,6 @@ class WSIMILDataset(Dataset):
         use_hdf5: bool = False,
         cache_enabled: bool = False,
         n_subsamples: int = -1,  # Number of patches to sample per bag (-1 means use all)
-        features_h5_path: Optional[
-            str
-        ] = None,  # Path to a single H5 file containing all features
     ):
         self.slide_data = slide_data_df  # DataFrame for this specific split
         self.data_directory = data_directory
@@ -639,27 +634,6 @@ class WSIMILDataset(Dataset):
         self.n_subsamples = n_subsamples
         self.data_cache: Dict[str, torch.Tensor] = {}
         self.verbose = True  # Add verbose flag if not present
-        self.features_h5_path = features_h5_path
-
-        if self.use_hdf5 and self.features_h5_path:
-            # Open the single H5 file once per worker and store in cache
-            global _worker_hdf5_cache
-            global _worker_hdf5_cache_lock
-            cache_key = f"GLOBAL_FEATURES_H5_{self.features_h5_path}"
-            with _worker_hdf5_cache_lock:
-                if cache_key not in _worker_hdf5_cache:
-                    try:
-                        _worker_hdf5_cache[cache_key] = h5py.File(
-                            self.features_h5_path, "r"
-                        )
-                        if self.verbose:
-                            print(
-                                f"Opened global H5 file for WSIMILDataset: {self.features_h5_path}"
-                            )
-                    except Exception as e:
-                        raise IOError(
-                            f"Failed to open global H5 file {self.features_h5_path}: {e}"
-                        ) from e
 
         if not self.use_hdf5 and not self.backbone:
             print(
@@ -740,84 +714,31 @@ class WSIMILDataset(Dataset):
             features = self._sample_patches(features)
             return features, label
         else:  # use_hdf5
-            if self.features_h5_path:
-                # Use the pre-opened global H5 file
-                cache_key = f"GLOBAL_FEATURES_H5_{self.features_h5_path}"
+            file_path = os.path.join(current_data_dir_path, f"{slide_id}.h5")
+            try:
                 with _worker_hdf5_cache_lock:
-                    if cache_key not in _worker_hdf5_cache:
-                        # This should ideally be pre-opened in __init__
-                        raise RuntimeError(
-                            f"Global H5 file {self.features_h5_path} not opened in worker cache for key {cache_key}."
-                        )
-                    hdf5_file = _worker_hdf5_cache[cache_key]
+                    if file_path not in _worker_hdf5_cache:
+                        _worker_hdf5_cache[file_path] = h5py.File(file_path, "r")
+                    hdf5_file = _worker_hdf5_cache[file_path]
 
-                try:
-                    # Access features within the global H5 file using slide_id as a group key
-                    if slide_id not in hdf5_file:
-                        raise KeyError(
-                            f"Slide ID '{slide_id}' not found in global H5 file groups."
-                        )
+                features_dset = hdf5_file["features"]
+                num_patches = features_dset.shape[0]
 
-                    slide_group = hdf5_file[slide_id]
-                    features_dset = slide_group["features"]
-                    num_patches = features_dset.shape[0]
+                if self.n_subsamples > 0 and num_patches > self.n_subsamples:
+                    indices = torch.randperm(num_patches)[: self.n_subsamples].numpy()
+                    indices.sort()
+                else:
+                    indices = np.arange(num_patches)
+                features = torch.from_numpy(features_dset[indices])
 
-                    # Decide which indices to sample.
-                    if self.n_subsamples > 0 and num_patches > self.n_subsamples:
-                        indices = torch.randperm(num_patches)[
-                            : self.n_subsamples
-                        ].numpy()
-                        indices.sort()  # Sorting indices can lead to faster reads
-                    else:
-                        indices = np.arange(num_patches)
-                    features = torch.from_numpy(features_dset[indices])
-
-                    # Do the same for coordinates if they exist.
-                    if "coords" in slide_group:
-                        coords_dset = slide_group["coords"]
-                        coordinates = coords_dset[indices]
-                        return features, label, coordinates
-                    else:
-                        return features, label
-                except KeyError as e:
-                    raise KeyError(
-                        f"Error accessing data for slide '{slide_id}' in global H5 file: {e}"
-                    ) from e
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Error loading features for slide '{slide_id}' from global H5 file: {e}"
-                    ) from e
-
-            else:  # Fallback to individual H5 files if no global path provided
-                file_path = os.path.join(current_data_dir_path, f"{slide_id}.h5")
-                try:
-                    with _worker_hdf5_cache_lock:
-                        if file_path not in _worker_hdf5_cache:
-                            _worker_hdf5_cache[file_path] = h5py.File(file_path, "r")
-                        hdf5_file = _worker_hdf5_cache[file_path]
-
-                    features_dset = hdf5_file["features"]
-                    num_patches = features_dset.shape[0]
-
-                    if self.n_subsamples > 0 and num_patches > self.n_subsamples:
-                        indices = torch.randperm(num_patches)[
-                            : self.n_subsamples
-                        ].numpy()
-                        indices.sort()
-                    else:
-                        indices = np.arange(num_patches)
-                    features = torch.from_numpy(features_dset[indices])
-
-                    if "coords" in hdf5_file:
-                        coords_dset = hdf5_file["coords"]
-                        coordinates = coords_dset[indices]
-                        return features, label, coordinates
-                    else:
-                        return features, label
-                except OSError as e:
-                    raise OSError(
-                        f"HDF5 file not found or corrupted: {file_path}"
-                    ) from e
+                if "coords" in hdf5_file:
+                    coords_dset = hdf5_file["coords"]
+                    coordinates = coords_dset[indices]
+                    return features, label, coordinates
+                else:
+                    return features, label
+            except OSError as e:
+                raise OSError(f"HDF5 file not found or corrupted: {file_path}") from e
 
     def set_backbone(self, backbone: str) -> None:
         if self.verbose:

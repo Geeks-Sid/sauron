@@ -493,7 +493,6 @@ class SurvivalDataManager:
         patch_size: str = "",  # For path .pt features
         cache_enabled: bool = False,
         n_subsamples: int = -1,
-        features_h5_path: Optional[str] = None,  # New parameter
         memmap_bin_path: Optional[str] = None,  # Path to memmap binary file
         memmap_json_path: Optional[str] = None,  # Path to memmap index JSON file
     ) -> Tuple[
@@ -586,7 +585,6 @@ class SurvivalDataManager:
                 "cache_enabled": cache_enabled,
                 "n_subsamples": n_subsamples,
                 "omic_names_for_coattn": self.omic_names_for_coattn,  # Pass coattn specific omic names
-                "features_h5_path": features_h5_path,  # Pass the new parameter
             }
 
             datasets = []
@@ -725,9 +723,6 @@ class SurvivalMILDataset(Dataset):
             pd.DataFrame
         ] = None,  # Scaled omic features for this split
         omic_names_for_coattn: Optional[List[List[str]]] = None,
-        features_h5_path: Optional[
-            str
-        ] = None,  # Path to a single H5 file containing all features
     ):
         self.patient_data = patient_data_df
         self.patient_slide_dict = patient_slide_dict
@@ -750,30 +745,6 @@ class SurvivalMILDataset(Dataset):
             omic_features_df_scaled  # Already selected and scaled for this split
         )
         self.omic_names_for_coattn = omic_names_for_coattn
-        self.features_h5_path = features_h5_path
-
-        if self.use_hdf5 and self.features_h5_path:
-            # Open the single H5 file once per worker and store in cache
-            global _worker_hdf5_cache
-            global _worker_hdf5_cache_lock
-            cache_key = f"GLOBAL_FEATURES_H5_{self.features_h5_path}"
-            with _worker_hdf5_cache_lock:
-                if cache_key not in _worker_hdf5_cache:
-                    try:
-                        _worker_hdf5_cache[cache_key] = h5py.File(
-                            self.features_h5_path, "r"
-                        )
-                        if (
-                            self.patient_data.iloc[0]["case_id"]
-                            == self.patient_data.iloc[0]["slide_id"]
-                        ):  # Check if this is a patient-level H5 file, to avoid duplicate print
-                            print(
-                                f"Opened global H5 file for SurvivalMILDataset: {self.features_h5_path}"
-                            )
-                    except Exception as e:
-                        raise IOError(
-                            f"Failed to open global H5 file {self.features_h5_path}: {e}"
-                        ) from e
 
         valid_modes = [
             "path",
@@ -870,51 +841,22 @@ class SurvivalMILDataset(Dataset):
                             )
                 all_path_features.append(wsi_bag)
             else:  # use_hdf5
-                if self.features_h5_path:
-                    # Use the pre-opened global H5 file
-                    cache_key = f"GLOBAL_FEATURES_H5_{self.features_h5_path}"
+                h5_file_path = os.path.join(
+                    current_data_dir_path, "h5_files", f"{slide_id}.h5"
+                )
+                try:
                     with _worker_hdf5_cache_lock:
-                        if cache_key not in _worker_hdf5_cache:
-                            raise RuntimeError(
-                                f"Global H5 file {self.features_h5_path} not opened in worker cache for key {cache_key}."
+                        if h5_file_path not in _worker_hdf5_cache:
+                            _worker_hdf5_cache[h5_file_path] = h5py.File(
+                                h5_file_path, "r"
                             )
-                        hdf5_file = _worker_hdf5_cache[cache_key]
-
-                    try:
-                        # Access features within the global H5 file using slide_id as a group key
-                        if slide_id not in hdf5_file:
-                            raise KeyError(
-                                f"Slide ID '{slide_id}' not found in global H5 file groups."
-                            )
-
-                        slide_group = hdf5_file[slide_id]
-                        features = torch.from_numpy(slide_group["features"][:])
-                        all_path_features.append(features)
-                    except KeyError as e:
-                        raise KeyError(
-                            f"Error accessing data for slide '{slide_id}' in global H5 file: {e}"
-                        ) from e
-                    except Exception as e:
-                        raise RuntimeError(
-                            f"Error loading features for slide '{slide_id}' from global H5 file: {e}"
-                        ) from e
-                else:  # Fallback to individual H5 files if no global path provided
-                    h5_file_path = os.path.join(
-                        current_data_dir_path, "h5_files", f"{slide_id}.h5"
+                        hf = _worker_hdf5_cache[h5_file_path]
+                    features = torch.from_numpy(hf["features"][:])
+                    all_path_features.append(features)
+                except OSError:
+                    raise OSError(
+                        f"HDF5 file not found or corrupted for slide {slide_id} at {h5_file_path}"
                     )
-                    try:
-                        with _worker_hdf5_cache_lock:
-                            if h5_file_path not in _worker_hdf5_cache:
-                                _worker_hdf5_cache[h5_file_path] = h5py.File(
-                                    h5_file_path, "r"
-                                )
-                            hf = _worker_hdf5_cache[h5_file_path]
-                        features = torch.from_numpy(hf["features"][:])
-                        all_path_features.append(features)
-                    except OSError:
-                        raise OSError(
-                            f"HDF5 file not found or corrupted for slide {slide_id} at {h5_file_path}"
-                        )
 
         if not all_path_features:  # No features found for any slide_id of this patient
             # Return a dummy tensor or raise error. For MIL, usually expect some features.
