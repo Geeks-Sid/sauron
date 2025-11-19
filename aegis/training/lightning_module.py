@@ -1,47 +1,48 @@
-# aegis/training/lightning_module.py
-
-import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torchmetrics
 from sksurv.metrics import concordance_index_censored
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torchmetrics import MetricCollection
 
 from aegis.losses.surv_loss import CoxSurvLoss, NLLSurvLoss
 from aegis.mil_models.models_factory import mil_model_factory
 from aegis.utils.optimizers import get_optim
 
 
-class aegis(pl.LightningModule):
+class Aegis(pl.LightningModule):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.save_hyperparameters(args)  # Save args to checkpoint
+        self.save_hyperparameters(args)
         self.model = mil_model_factory(args)
 
-        # Loss function
+        # Storage for epoch-end aggregation (Fixes PL 2.0+ deprecation)
+        self.validation_step_outputs = []
+        self.test_step_outputs = []
+
+        # --- Optimization 1: Clean Loss & Metric Initialization ---
         if self.args.task_type.lower() == "classification":
             self.loss_fn = nn.CrossEntropyLoss()
-            # Metrics for classification
-            self.train_auc = torchmetrics.AUROC(
-                task="multiclass", num_classes=args.n_classes
+
+            # Use MetricCollection to group metrics
+            metrics = MetricCollection(
+                {
+                    "auc": torchmetrics.AUROC(
+                        task="multiclass", num_classes=args.n_classes
+                    ),
+                    "acc": torchmetrics.Accuracy(
+                        task="multiclass", num_classes=args.n_classes
+                    ),
+                }
             )
-            self.val_auc = torchmetrics.AUROC(
-                task="multiclass", num_classes=args.n_classes
-            )
-            self.test_auc = torchmetrics.AUROC(
-                task="multiclass", num_classes=args.n_classes
-            )
-            self.train_acc = torchmetrics.Accuracy(
-                task="multiclass", num_classes=args.n_classes
-            )
-            self.val_acc = torchmetrics.Accuracy(
-                task="multiclass", num_classes=args.n_classes
-            )
-            self.test_acc = torchmetrics.Accuracy(
-                task="multiclass", num_classes=args.n_classes
-            )
+
+            # Clone for different stages to maintain separate states
+            self.train_metrics = metrics.clone(prefix="train_")
+            self.val_metrics = metrics.clone(prefix="val_")
+            self.test_metrics = metrics.clone(prefix="test_")
+
         elif self.args.task_type.lower() == "survival":
             if self.args.bag_loss == "nll_surv":
                 self.loss_fn = NLLSurvLoss(alpha=self.args.alpha_surv)
@@ -55,90 +56,124 @@ class aegis(pl.LightningModule):
     def forward(self, x):
         return self.model(x)
 
+    # --- Optimization 2: Cleaner Helper returning Dictionary ---
     def _get_outputs_and_loss(self, batch):
+        results = {}
+
         if self.args.task_type.lower() == "classification":
-            if len(batch) == 3:
-                data, label, _ = batch
-            else:
-                data, label = batch
+            data, label = batch[0], batch[1]  # Robust to 2 or 3 item batches
             logits, probs, preds, _, _ = self.model(data)
             loss = self.loss_fn(logits, label)
-            return loss, logits, probs, label, None, None
+
+            results.update({"loss": loss, "probs": probs, "label": label})
+
         elif self.args.task_type.lower() == "survival":
-            data, label, event, c = batch  # Assuming dataloader provides these
+            data, label, event, c = batch
             hazards, S, preds, _, _ = self.model(data)
+
             loss = self.loss_fn(hazards=hazards, S=S, Y=label, c=c)
             risk = -torch.sum(S, dim=1)
-            return loss, risk, None, event, c, None
-        else:
-            raise ValueError(f"Unknown task type: {self.args.task_type}")
+
+            results.update({"loss": loss, "risk": risk, "event": event, "c": c})
+
+        return results
 
     def training_step(self, batch, batch_idx):
-        loss, outputs, _, _, _, _ = self._get_outputs_and_loss(batch)
+        res = self._get_outputs_and_loss(batch)
+        loss = res["loss"]
+
         self.log(
             "train_loss",
             loss,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
-            logger=True,
             batch_size=batch[0].size(0),
         )
+
+        if self.args.task_type.lower() == "classification":
+            # Update all metrics at once
+            output = self.train_metrics(res["probs"], res["label"])
+            self.log_dict(output, on_step=False, on_epoch=True, prog_bar=True)
+
         return loss
 
     def validation_step(self, batch, batch_idx):
-        loss, outputs, probs, labels, c, _ = self._get_outputs_and_loss(batch)
-        self.log(
-            "val_loss", loss, prog_bar=True, logger=True, batch_size=batch[0].size(0)
-        )
+        res = self._get_outputs_and_loss(batch)
+        self.log("val_loss", res["loss"], prog_bar=True, batch_size=batch[0].size(0))
 
         if self.args.task_type.lower() == "classification":
-            self.val_auc.update(probs, labels)
-            self.val_acc.update(probs, labels)
-            self.log("val_acc", self.val_acc, on_epoch=True, prog_bar=True)
+            self.val_metrics.update(res["probs"], res["label"])
         elif self.args.task_type.lower() == "survival":
-            # For survival, we need to collect all outputs to compute c-index at the end of epoch
-            return {"risk": outputs, "event": labels, "c": c}
+            # Store tensors, don't convert to numpy yet (Optimization 3)
+            self.validation_step_outputs.append(
+                {
+                    "risk": res["risk"].detach().cpu(),
+                    "event": res["event"].detach().cpu(),
+                    "c": res["c"].detach().cpu(),
+                }
+            )
 
     def on_validation_epoch_end(self):
         if self.args.task_type.lower() == "classification":
-            self.log("val_auc", self.val_auc.compute(), prog_bar=True)
-            self.val_auc.reset()
-            self.val_acc.reset()
+            output = self.val_metrics.compute()
+            self.log_dict(output, prog_bar=True)
+            self.val_metrics.reset()
+
         elif self.args.task_type.lower() == "survival":
-            # This part is tricky with PyTorch Lightning; a common approach is to collect outputs
-            # from validation_step and compute the metric here.
-            # As of recent versions, this requires manual collection.
-            # A simpler approach for now is to compute it in a callback or outside the main loop
-            # based on the best checkpoint.
-            # For a complete PL implementation, you'd collect outputs from `validation_step`.
-            pass
+            # Compute C-Index efficiently
+            if self.validation_step_outputs:
+                risks = torch.cat(
+                    [x["risk"] for x in self.validation_step_outputs]
+                ).numpy()
+                events = torch.cat(
+                    [x["event"] for x in self.validation_step_outputs]
+                ).numpy()
+                cs = torch.cat([x["c"] for x in self.validation_step_outputs]).numpy()
+
+                event_observed = (1 - cs).astype(bool)
+                try:
+                    c_index = concordance_index_censored(event_observed, events, risks)[
+                        0
+                    ]
+                    self.log("val_c_index", c_index, prog_bar=True)
+                except Exception as e:
+                    print(f"Error computing C-Index: {e}")
+
+                self.validation_step_outputs.clear()  # Free memory
 
     def test_step(self, batch, batch_idx):
-        loss, outputs, probs, labels, c, _ = self._get_outputs_and_loss(batch)
-        self.log("test_loss", loss, logger=True, batch_size=batch[0].size(0))
+        res = self._get_outputs_and_loss(batch)
+        self.log("test_loss", res["loss"], batch_size=batch[0].size(0))
 
         if self.args.task_type.lower() == "classification":
-            self.test_auc.update(probs, labels)
-            self.test_acc.update(probs, labels)
+            self.test_metrics.update(res["probs"], res["label"])
         elif self.args.task_type.lower() == "survival":
-            return {
-                "risk": outputs.cpu().numpy(),
-                "event": labels.cpu().numpy(),
-                "c": c.cpu().numpy(),
-            }
+            self.test_step_outputs.append(
+                {
+                    "risk": res["risk"].detach().cpu(),
+                    "event": res["event"].detach().cpu(),
+                    "c": res["c"].detach().cpu(),
+                }
+            )
 
-    def on_test_epoch_end(self, outputs):
+    def on_test_epoch_end(self):
         if self.args.task_type.lower() == "classification":
-            self.log("test_auc", self.test_auc.compute())
-            self.log("test_acc", self.test_acc.compute())
-        elif self.args.task_type.lower() == "survival" and outputs:
-            risks = np.concatenate([o["risk"] for o in outputs])
-            events = np.concatenate([o["event"] for o in outputs])
-            cs = np.concatenate([o["c"] for o in outputs])
-            event_observed = (1 - cs).astype(bool)
-            c_index = concordance_index_censored(event_observed, events, risks)[0]
-            self.log("test_c_index", c_index)
+            output = self.test_metrics.compute()
+            self.log_dict(output)
+            self.test_metrics.reset()
+
+        elif self.args.task_type.lower() == "survival":
+            if self.test_step_outputs:
+                risks = torch.cat([x["risk"] for x in self.test_step_outputs]).numpy()
+                events = torch.cat([x["event"] for x in self.test_step_outputs]).numpy()
+                cs = torch.cat([x["c"] for x in self.test_step_outputs]).numpy()
+
+                event_observed = (1 - cs).astype(bool)
+                c_index = concordance_index_censored(event_observed, events, risks)[0]
+                self.log("test_c_index", c_index)
+
+                self.test_step_outputs.clear()
 
     def configure_optimizers(self):
         optimizer = get_optim(self.model, self.args)
