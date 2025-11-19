@@ -1,6 +1,5 @@
 # Use an official NVIDIA CUDA runtime as a parent image
-FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
-
+FROM nvcr.io/nvidia/pytorch:25.10-py3
 # Set the working directory in the container
 WORKDIR /app
 
