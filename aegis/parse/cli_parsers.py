@@ -341,6 +341,18 @@ def get_mil_args(parser: argparse.ArgumentParser):
         action="store_true",
         help="Enable the use of HDF5 files for feature storage.",
     )
+    parser.add_argument(
+        "--memmap_bin_path",
+        type=str,
+        default=None,
+        help="Path to the binary memmap file containing concatenated features. If provided along with --memmap_json_path, will use memory-mapped datasets for faster I/O.",
+    )
+    parser.add_argument(
+        "--memmap_json_path",
+        type=str,
+        default=None,
+        help="Path to the JSON index file mapping slide_ids to [start_row, num_rows] in the memmap binary file. Required if --memmap_bin_path is provided.",
+    )
 
     # Training Hyperparameters
     parser.add_argument(
