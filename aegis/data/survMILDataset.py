@@ -11,6 +11,12 @@ import torch
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset
 
+# Import memmap dataset for conditional use
+try:
+    from aegis.data.memmapMILDataset import MemmapSurvivalMILDataset
+except ImportError:
+    MemmapSurvivalMILDataset = None
+
 # Worker-local HDF5 file handle cache to avoid opening/closing files repeatedly
 # This is shared across all dataset instances in the same worker process
 _worker_hdf5_cache: Dict[str, h5py.File] = {}
@@ -488,6 +494,8 @@ class SurvivalDataManager:
         cache_enabled: bool = False,
         n_subsamples: int = -1,
         features_h5_path: Optional[str] = None,  # New parameter
+        memmap_bin_path: Optional[str] = None,  # Path to memmap binary file
+        memmap_json_path: Optional[str] = None,  # Path to memmap index JSON file
     ) -> Tuple[
         Optional[SurvivalMILDataset],
         Optional[SurvivalMILDataset],
@@ -498,67 +506,133 @@ class SurvivalDataManager:
                 "Splits not set. Call a split creation method and set_next_fold...() first."
             )
 
-        common_params = {
-            "patient_slide_dict": self.patient_slide_dict,
-            "data_directory": self.data_directory,
-            "time_column": self.time_column,
-            "event_column": self.event_column,
-            "disc_label_column": "disc_label",  # Column name in patient_df for discrete time bin
-            "combined_label_column": "label",  # Column name in patient_df for (bin,event) label
-            "mode": mode,
-            "use_hdf5": use_hdf5,
-            "backbone": backbone,
-            "patch_size": patch_size,
-            "cache_enabled": cache_enabled,
-            "n_subsamples": n_subsamples,
-            "omic_names_for_coattn": self.omic_names_for_coattn,  # Pass coattn specific omic names
-            "features_h5_path": features_h5_path,  # Pass the new parameter
-        }
+        # Check if memmap paths are provided
+        use_memmap = memmap_bin_path is not None and memmap_json_path is not None
 
-        datasets = []
-        for split_name, patient_ids_list in [
-            ("train", self.train_patient_ids),
-            ("val", self.val_patient_ids),
-            ("test", self.test_patient_ids),
-        ]:
-            if not patient_ids_list:
-                datasets.append(None)
-                continue
+        if use_memmap:
+            # Use MemmapSurvivalMILDataset
+            if MemmapSurvivalMILDataset is None:
+                raise ImportError(
+                    "MemmapSurvivalMILDataset not available. "
+                    "Ensure aegis.data.memmapMILDataset is properly imported."
+                )
 
-            # Get patient data for this split
-            current_split_patient_df = self.patient_df[
-                self.patient_df["case_id"].isin(patient_ids_list)
-            ].reset_index(drop=True)
+            datasets = []
+            for split_name, patient_ids_list in [
+                ("train", self.train_patient_ids),
+                ("val", self.val_patient_ids),
+                ("test", self.test_patient_ids),
+            ]:
+                if not patient_ids_list:
+                    datasets.append(None)
+                    continue
 
-            current_split_omic_df = None
-            if self.omic_features_df is not None:
-                # Select omic features for current patients
-                omic_for_split = self.omic_features_df.loc[patient_ids_list]
-                # Apply scaler if fitted (scaler is fitted on train_patient_ids)
-                if (
-                    self.omic_scalers and "all" in self.omic_scalers
-                ):  # Assuming one scaler for all omics for now
-                    scaled_omic_data = self.omic_scalers["all"].transform(
-                        omic_for_split[self.omic_feature_names]
-                    )
-                    current_split_omic_df = pd.DataFrame(
-                        scaled_omic_data,
-                        columns=self.omic_feature_names,
-                        index=omic_for_split.index,
-                    )
-                else:
-                    current_split_omic_df = omic_for_split[
-                        self.omic_feature_names
-                    ].copy()  # No scaling or scaler not ready
+                # Get patient data for this split
+                current_split_patient_df = self.patient_df[
+                    self.patient_df["case_id"].isin(patient_ids_list)
+                ].reset_index(drop=True)
 
-            dataset = SurvivalMILDataset(
-                patient_data_df=current_split_patient_df,
-                omic_features_df_scaled=current_split_omic_df,  # Pass potentially scaled omics
-                **common_params,
-            )
-            datasets.append(dataset)
+                current_split_omic_df = None
+                if self.omic_features_df is not None:
+                    # Select omic features for current patients
+                    omic_for_split = self.omic_features_df.loc[patient_ids_list]
+                    # Apply scaler if fitted (scaler is fitted on train_patient_ids)
+                    if (
+                        self.omic_scalers and "all" in self.omic_scalers
+                    ):  # Assuming one scaler for all omics for now
+                        scaled_omic_data = self.omic_scalers["all"].transform(
+                            omic_for_split[self.omic_feature_names]
+                        )
+                        current_split_omic_df = pd.DataFrame(
+                            scaled_omic_data,
+                            columns=self.omic_feature_names,
+                            index=omic_for_split.index,
+                        )
+                    else:
+                        current_split_omic_df = omic_for_split[
+                            self.omic_feature_names
+                        ].copy()  # No scaling or scaler not ready
 
-        return tuple(datasets)
+                dataset = MemmapSurvivalMILDataset(
+                    bin_path=memmap_bin_path,
+                    json_path=memmap_json_path,
+                    patient_data_df=current_split_patient_df,
+                    patient_slide_dict=self.patient_slide_dict,
+                    time_column=self.time_column,
+                    event_column=self.event_column,
+                    disc_label_column="disc_label",
+                    combined_label_column="label",
+                    mode=mode,
+                    n_subsamples=n_subsamples if n_subsamples > 0 else 2048,
+                    omic_features_df_scaled=current_split_omic_df,
+                    omic_names_for_coattn=self.omic_names_for_coattn,
+                )
+                datasets.append(dataset)
+
+            return tuple(datasets)
+        else:
+            # Use original SurvivalMILDataset
+            common_params = {
+                "patient_slide_dict": self.patient_slide_dict,
+                "data_directory": self.data_directory,
+                "time_column": self.time_column,
+                "event_column": self.event_column,
+                "disc_label_column": "disc_label",  # Column name in patient_df for discrete time bin
+                "combined_label_column": "label",  # Column name in patient_df for (bin,event) label
+                "mode": mode,
+                "use_hdf5": use_hdf5,
+                "backbone": backbone,
+                "patch_size": patch_size,
+                "cache_enabled": cache_enabled,
+                "n_subsamples": n_subsamples,
+                "omic_names_for_coattn": self.omic_names_for_coattn,  # Pass coattn specific omic names
+                "features_h5_path": features_h5_path,  # Pass the new parameter
+            }
+
+            datasets = []
+            for split_name, patient_ids_list in [
+                ("train", self.train_patient_ids),
+                ("val", self.val_patient_ids),
+                ("test", self.test_patient_ids),
+            ]:
+                if not patient_ids_list:
+                    datasets.append(None)
+                    continue
+
+                # Get patient data for this split
+                current_split_patient_df = self.patient_df[
+                    self.patient_df["case_id"].isin(patient_ids_list)
+                ].reset_index(drop=True)
+
+                current_split_omic_df = None
+                if self.omic_features_df is not None:
+                    # Select omic features for current patients
+                    omic_for_split = self.omic_features_df.loc[patient_ids_list]
+                    # Apply scaler if fitted (scaler is fitted on train_patient_ids)
+                    if (
+                        self.omic_scalers and "all" in self.omic_scalers
+                    ):  # Assuming one scaler for all omics for now
+                        scaled_omic_data = self.omic_scalers["all"].transform(
+                            omic_for_split[self.omic_feature_names]
+                        )
+                        current_split_omic_df = pd.DataFrame(
+                            scaled_omic_data,
+                            columns=self.omic_feature_names,
+                            index=omic_for_split.index,
+                        )
+                    else:
+                        current_split_omic_df = omic_for_split[
+                            self.omic_feature_names
+                        ].copy()  # No scaling or scaler not ready
+
+                dataset = SurvivalMILDataset(
+                    patient_data_df=current_split_patient_df,
+                    omic_features_df_scaled=current_split_omic_df,  # Pass potentially scaled omics
+                    **common_params,
+                )
+                datasets.append(dataset)
+
+            return tuple(datasets)
 
     def _fit_omic_scaler(self, train_patient_ids_for_scaling: List[str]):
         if self.omic_features_df is None or not train_patient_ids_for_scaling:
