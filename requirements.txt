@@ -5,3 +5,6 @@ scikit-image
 scikit-learn
 scikit-survival
 scipy
+mamba-ssm[causal-conv1d]
+pytorch-lightning
+h5py

@@ -81,7 +81,67 @@ else
 fi
 
 echo "Launching training..."
-python -u train_mil_run.py --data_root_dir "E:\\features_uni_v2" --dataset_csv Data/tcga-ot_train.csv --label_col OncoTreeCode --patient_id_col case_id --slide_id_col slide_id --results_dir ./results --task multiclass --task_type classification --exp_code tcga_ot_multiclass_s1 --seed 42 --num_workers 16 --log_data --testing --k 1 --k_start 0 --k_end 1 --model_type att_mil --backbone uni_v2 --in_dim 1536 --max_epochs 200 --lr 1e-4 --reg 1e-5 --opt adam --drop_out 0.25 --early_stopping --preloading no --weighted_sample --batch_size 4 --use_hdf5 --n_subsamples 2048 
+
+# Optional: Set memmap paths if you have converted your data to memmap format
+# To use memmap datasets for faster I/O, first convert your H5 files:
+#   python -u aegis/utils/convert_to_memmap.py \
+#       --source_dir /path/to/h5_files \
+#       --output_bin /path/to/dataset.bin \
+#       --output_json /path/to/dataset_index.json
+#
+# Then set these environment variables before running this script:
+#   export MEMMAP_BIN_PATH="/path/to/dataset.bin"
+#   export MEMMAP_JSON_PATH="/path/to/dataset_index.json"
+# Or uncomment and set them directly below:
+# MEMMAP_BIN_PATH="${MEMMAP_BIN_PATH:-/path/to/dataset.bin}"
+# MEMMAP_JSON_PATH="${MEMMAP_JSON_PATH:-/path/to/dataset_index.json}"
+
+# Build base command arguments
+PYTHON_ARGS=(
+    --data_root_dir "E:\\features_uni_v2"
+    --dataset_csv Data/tcga-ot_train.csv
+    --label_col OncoTreeCode
+    --patient_id_col case_id
+    --slide_id_col slide_id
+    --results_dir ./results
+    --task multiclass
+    --task_type classification
+    --exp_code tcga_ot_multiclass_s1
+    --seed 42
+    --num_workers 16
+    --log_data
+    --testing
+    --k 1
+    --k_start 0
+    --k_end 1
+    --model_type att_mil
+    --backbone uni_v2
+    --in_dim 1536
+    --max_epochs 200
+    --lr 1e-4
+    --reg 1e-5
+    --opt adam
+    --drop_out 0.25
+    --early_stopping
+    --preloading no
+    --weighted_sample
+    --batch_size 4
+    --use_hdf5
+    --n_subsamples 2048
+)
+
+# Add memmap arguments if both paths are provided
+if [ -n "${MEMMAP_BIN_PATH:-}" ] && [ -n "${MEMMAP_JSON_PATH:-}" ]; then
+    PYTHON_ARGS+=(--memmap_bin_path "$MEMMAP_BIN_PATH")
+    PYTHON_ARGS+=(--memmap_json_path "$MEMMAP_JSON_PATH")
+    echo "Using memmap datasets:"
+    echo "  Binary file: $MEMMAP_BIN_PATH"
+    echo "  Index file: $MEMMAP_JSON_PATH"
+else
+    echo "Using standard HDF5/PT file datasets (set MEMMAP_BIN_PATH and MEMMAP_JSON_PATH to use memmap)"
+fi
+
+python -u train_mil_run.py "${PYTHON_ARGS[@]}"
 
 # Example: To use a different model, change --model_type:
 # --model_type trans_mil --activation gelu
