@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  aegis:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aegis:latest
+    container_name: aegis-container
+    # Enable GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Mount E: drive to /data in container
+    # For WSL: use /mnt/e
+    # For Windows native Docker: use E:/
+    volumes:
+      - /mnt/e:/data:rw  # WSL path - change to E:/:/data:rw for native Windows Docker
+      - ./results:/app/results:rw  # Mount results directory
+      - ./Data:/app/Data:rw  # Mount Data directory if needed
+    # Override entrypoint to get interactive shell
+    entrypoint: /bin/bash
+    stdin_open: true
+    tty: true
+    # Set working directory
+    working_dir: /app
+

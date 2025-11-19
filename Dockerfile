@@ -21,3 +21,13 @@ RUN pip3 install .
 # Set the entrypoint
 ENTRYPOINT ["aegis"]
 
+# To mount your E: drive when running the container, use:
+# 
+# For WSL/Linux:
+#   docker run -it --gpus all -v /mnt/e:/data aegis /bin/bash
+#
+# For Windows (native Docker Desktop):
+#   docker run -it --gpus all -v E:/:/data aegis /bin/bash
+#
+# Or use docker-compose.yml (see docker-compose.yml file)
+
