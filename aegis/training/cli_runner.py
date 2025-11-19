@@ -108,6 +108,8 @@ def run_experiment_folds(
             "use_hdf5": getattr(args, "use_hdf5", False),
             "cache_enabled": getattr(args, "preloading", "no").lower() == "yes",
             "n_subsamples": getattr(args, "n_subsamples", -1),
+            "memmap_bin_path": getattr(args, "memmap_bin_path", None),
+            "memmap_json_path": getattr(args, "memmap_json_path", None),
         }
 
         # Add survival-specific parameters if needed
