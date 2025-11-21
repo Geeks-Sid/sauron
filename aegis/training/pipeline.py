@@ -1,4 +1,26 @@
 import os
+import platform
+import sys
+from unittest.mock import MagicMock
+
+# Conditional import mocking for Mamba on Windows
+if platform.system() == "Windows":
+    # Mock mamba_ssm and its submodules to prevent ImportErrors/DLL errors on Windows
+    # This allows the code to run even if mamba_ssm is not installed or compatible
+    mamba_mock = MagicMock()
+    sys.modules["mamba_ssm"] = mamba_mock
+    sys.modules["mamba_ssm.modules"] = mamba_mock
+    sys.modules["mamba_ssm.modules.bimamba"] = mamba_mock
+    sys.modules["mamba_ssm.modules.mamba_simple"] = mamba_mock
+    sys.modules["mamba_ssm.modules.srmamba"] = mamba_mock
+
+    # Also mock the local aegis.mil_models.mamba_ssm path
+    sys.modules["aegis.mil_models.mamba_ssm"] = mamba_mock
+    sys.modules["aegis.mil_models.mamba_ssm.modules"] = mamba_mock
+    sys.modules["aegis.mil_models.mamba_ssm.modules.bimamba"] = mamba_mock
+    sys.modules["aegis.mil_models.mamba_ssm.modules.mamba_simple"] = mamba_mock
+    sys.modules["aegis.mil_models.mamba_ssm.modules.srmamba"] = mamba_mock
+
 from typing import Tuple
 
 import pytorch_lightning as pl
@@ -77,18 +99,23 @@ def train_fold(
             save_dir=experiment_base_results_dir, name="logs"
         ),
         log_every_n_steps=10,
-        profiler="simple",
-        fast_dev_run=True,
-        limit_train_batches=16,
-        limit_val_batches=1,
-        limit_test_batches=0,
     )
 
     # Training
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
-    print(f"Loading best model from checkpoint: {checkpoint_callback.best_model_path}")
-    best_model = aegis.load_from_checkpoint(checkpoint_callback.best_model_path)
+    # Load best model from checkpoint
+    best_checkpoint_path = checkpoint_callback.best_model_path
+    print(f"Best checkpoint path: {best_checkpoint_path}")
+    
+    # Validate checkpoint path
+    if not best_checkpoint_path or not os.path.exists(best_checkpoint_path):
+        print(f"Warning: Best checkpoint not found at '{best_checkpoint_path}'")
+        print("Using the current model state instead of loading from checkpoint.")
+        best_model = model
+    else:
+        print(f"Loading best model from checkpoint: {best_checkpoint_path}")
+        best_model = aegis.load_from_checkpoint(best_checkpoint_path)
 
     # Validation & Testing with best model
     val_results = trainer.test(best_model, dataloaders=val_loader, verbose=False)[0]

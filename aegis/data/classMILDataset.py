@@ -27,8 +27,8 @@ _worker_hdf5_cache_lock = threading.Lock()
 class ClassificationDataManager:
     def __init__(
         self,
-        csv_path: str,
-        data_directory: Union[str, Dict[str, str]],
+        csv_path: Optional[str] = None,
+        data_directory: Union[str, Dict[str, str]] = None,
         label_column: str = "label",  # Actual column name in CSV for labels
         label_mapping: Optional[Dict[str, int]] = None,
         patient_id_col_name: str = "case_id",  # Actual col name in CSV for patient ID
@@ -41,8 +41,14 @@ class ClassificationDataManager:
         patient_stratification: bool = False,  # If true, __len__ uses patient_data
         patient_label_aggregation: str = "max",  # 'max' or 'majority'
         split_dir: Optional[str] = None,
+        train_csv: Optional[str] = None,
+        val_csv: Optional[str] = None,
+        test_csv: Optional[str] = None,
     ):
         self.csv_path = csv_path
+        self.train_csv = train_csv
+        self.val_csv = val_csv
+        self.test_csv_path = test_csv
         self.data_directory = data_directory
         self.provided_label_column = label_column
         self.label_mapping = label_mapping or {}
@@ -67,10 +73,38 @@ class ClassificationDataManager:
         self.train_val_patient_data_for_kfold: Optional[pd.DataFrame] = None
 
         # Load and preprocess slide data
-        try:
-            raw_slide_data = pd.read_csv(csv_path)
-        except FileNotFoundError as e:
-            raise FileNotFoundError(f"CSV file not found: {csv_path}") from e
+        if csv_path is not None:
+            try:
+                raw_slide_data = pd.read_csv(csv_path)
+            except FileNotFoundError as e:
+                raise FileNotFoundError(f"CSV file not found: {csv_path}") from e
+        elif train_csv is not None:
+            # Load separate CSVs
+            try:
+                train_df = pd.read_csv(train_csv)
+                self.train_patient_ids = train_df[self.patient_id_col_name].unique().tolist()
+                
+                dfs = [train_df]
+                if val_csv:
+                    val_df = pd.read_csv(val_csv)
+                    self.val_patient_ids = val_df[self.patient_id_col_name].unique().tolist()
+                    dfs.append(val_df)
+                else:
+                    self.val_patient_ids = []
+                    
+                if test_csv:
+                    test_df = pd.read_csv(test_csv)
+                    self.test_patient_ids = test_df[self.patient_id_col_name].unique().tolist()
+                    dfs.append(test_df)
+                else:
+                    self.test_patient_ids = []
+                
+                raw_slide_data = pd.concat(dfs, ignore_index=True)
+                
+            except FileNotFoundError as e:
+                raise FileNotFoundError(f"One of the split CSV files not found") from e
+        else:
+            raise ValueError("Either csv_path or train_csv must be provided.")
 
         # Standardize column names internally
         self.slide_data = self._rename_cols(raw_slide_data)
@@ -109,6 +143,26 @@ class ClassificationDataManager:
 
         if verbose:
             self._print_summary()
+
+        # If separate CSVs were provided, we need to set the indices now that processing is done
+        if csv_path is None and train_csv is not None:
+            # Re-derive indices based on patient IDs (which we stored) and the processed slide_data
+            # Note: slide_data might have been filtered, so we need to be careful
+            
+            # Update patient IDs based on what remains in slide_data
+            available_patients = set(self.slide_data['case_id'].unique())
+            
+            self.train_patient_ids = [pid for pid in self.train_patient_ids if pid in available_patients]
+            self.val_patient_ids = [pid for pid in self.val_patient_ids if pid in available_patients]
+            self.test_patient_ids = [pid for pid in self.test_patient_ids if pid in available_patients]
+            
+            self.train_slide_indices = self.slide_data[self.slide_data['case_id'].isin(self.train_patient_ids)].index.tolist()
+            self.val_slide_indices = self.slide_data[self.slide_data['case_id'].isin(self.val_patient_ids)].index.tolist()
+            self.test_slide_indices = self.slide_data[self.slide_data['case_id'].isin(self.test_patient_ids)].index.tolist()
+            
+            # Create a dummy kfold_splits to make set_current_fold work or just set it directly
+            # Since we have fixed splits, we can treat it as a single fold
+            self.kfold_splits = [(self.train_patient_ids, self.val_patient_ids)]
 
     def _rename_cols(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -272,6 +326,11 @@ class ClassificationDataManager:
     def create_k_fold_splits(
         self, num_folds: int = 5, test_set_size: float = 0.1
     ) -> None:
+        if self.kfold_splits is not None:
+            if self.verbose:
+                print("Splits already set (e.g. from separate CSVs or loaded). Skipping creation.")
+            return
+
         if self.patient_data.empty:
             raise ValueError("Patient data is empty. Cannot create splits.")
 

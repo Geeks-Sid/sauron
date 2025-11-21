@@ -12,7 +12,7 @@ SUPPORTED_TASKS = ["TGCT", "BRCA", "COAD", "UCEC", "LUAD"]
 def get_data_manager(
     task_name: str,
     task_type: str,
-    csv_path: str,
+    csv_path: Optional[str],
     data_directory: Union[str, Dict[str, str]],
     seed: int = 7,
     verbose: bool = True,
@@ -51,8 +51,16 @@ def get_data_manager(
             f"Warning: Task '{task_name}' not in predefined SUPPORTED_TASKS, but proceeding based on task_type."
         )
 
-    if not os.path.exists(csv_path):
+    if csv_path and not os.path.exists(csv_path):
         raise FileNotFoundError(f"Dataset CSV file not found: {csv_path}")
+    
+    # Extract split CSVs from kwargs
+    train_csv = kwargs.get("train_csv")
+    val_csv = kwargs.get("val_csv")
+    test_csv = kwargs.get("test_csv")
+    
+    if not csv_path and not train_csv:
+        raise ValueError("Either csv_path or train_csv must be provided.")
 
     if task_type.lower() == "classification":
         # Extract classification-specific args from kwargs with defaults
@@ -76,6 +84,9 @@ def get_data_manager(
             data_directory=data_directory,
             random_seed=seed,
             verbose=verbose,
+            train_csv=train_csv,
+            val_csv=val_csv,
+            test_csv=test_csv,
             **cls_kwargs,
         )
     elif task_type.lower() == "survival":
@@ -106,6 +117,9 @@ def get_data_manager(
             data_directory=data_directory,
             random_seed=seed,
             verbose=verbose,
+            train_csv=train_csv,
+            val_csv=val_csv,
+            test_csv=test_csv,
             **surv_kwargs,
         )
     else:

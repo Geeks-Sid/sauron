@@ -285,6 +285,24 @@ def get_mil_args(parser: argparse.ArgumentParser):
         help="Path to the CSV file with slide ids, patient ids, and labels.",
     )
     parser.add_argument(
+        "--train_csv",
+        type=str,
+        default=None,
+        help="Path to the training CSV file.",
+    )
+    parser.add_argument(
+        "--val_csv",
+        type=str,
+        default=None,
+        help="Path to the validation CSV file.",
+    )
+    parser.add_argument(
+        "--test_csv",
+        type=str,
+        default=None,
+        help="Path to the testing CSV file.",
+    )
+    parser.add_argument(
         "--label_col",
         type=str,
         default="label",

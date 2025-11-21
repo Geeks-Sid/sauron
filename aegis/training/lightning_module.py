@@ -11,7 +11,7 @@ from aegis.mil_models.models_factory import mil_model_factory
 from aegis.utils.optimizers import get_optim
 
 
-class Aegis(pl.LightningModule):
+class aegis(pl.LightningModule):
     def __init__(self, args):
         super().__init__()
         self.args = args

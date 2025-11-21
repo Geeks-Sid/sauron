@@ -33,12 +33,12 @@ from aegis.utils.generic_utils import (
 class SurvivalDataManager:
     def __init__(
         self,
-        csv_path: str,
+        csv_path: Optional[str] = None,
         data_directory: Union[
             str, Dict[str, str]
-        ],  # Path to feature root dir or dict by source
-        time_column: str,  # e.g., 'survival_months'
-        event_column: str,  # e.g., 'censorship' (0 for censored, 1 for event)
+        ] = None,  # Path to feature root dir or dict by source
+        time_column: str = "survival_months",  # e.g., 'survival_months'
+        event_column: str = "censorship",  # e.g., 'censorship' (0 for censored, 1 for event)
         patient_id_col_name: str = "case_id",
         slide_id_col_name: str = "slide_id",  # Though survival is often patient-level for MIL
         n_bins: int = 4,  # For discretizing survival time
@@ -52,8 +52,14 @@ class SurvivalDataManager:
         omic_patient_id_col: Optional[str] = "case_id",  # Patient ID col in omic CSV
         apply_sig: bool = False,  # For coattn mode signatures
         signatures_csv_path: Optional[str] = None,  # Path to signatures CSV for coattn
+        train_csv: Optional[str] = None,
+        val_csv: Optional[str] = None,
+        test_csv: Optional[str] = None,
     ):
         self.csv_path = csv_path
+        self.train_csv = train_csv
+        self.val_csv = val_csv
+        self.test_csv_path = test_csv
         self.data_directory = data_directory
         self.time_column = time_column
         self.event_column = event_column
@@ -72,7 +78,34 @@ class SurvivalDataManager:
         np.random.seed(self.random_seed)
 
         # Load and preprocess slide/patient data
-        raw_data = pd.read_csv(csv_path, low_memory=False)
+        # Load and preprocess slide/patient data
+        if csv_path is not None:
+            raw_data = pd.read_csv(csv_path, low_memory=False)
+        elif train_csv is not None:
+            try:
+                train_df = pd.read_csv(train_csv, low_memory=False)
+                self.train_patient_ids = train_df[self.patient_id_col_name].unique().tolist()
+                
+                dfs = [train_df]
+                if val_csv:
+                    val_df = pd.read_csv(val_csv, low_memory=False)
+                    self.val_patient_ids = val_df[self.patient_id_col_name].unique().tolist()
+                    dfs.append(val_df)
+                else:
+                    self.val_patient_ids = []
+                    
+                if test_csv:
+                    test_df = pd.read_csv(test_csv, low_memory=False)
+                    self.test_patient_ids = test_df[self.patient_id_col_name].unique().tolist()
+                    dfs.append(test_df)
+                else:
+                    self.test_patient_ids = []
+                
+                raw_data = pd.concat(dfs, ignore_index=True)
+            except FileNotFoundError as e:
+                raise FileNotFoundError(f"One of the split CSV files not found") from e
+        else:
+            raise ValueError("Either csv_path or train_csv must be provided.")
         self.slide_data = self._rename_cols(
             raw_data
         )  # Standardizes to "case_id", "slide_id"
@@ -122,6 +155,20 @@ class SurvivalDataManager:
 
         if verbose:
             self._print_summary()
+
+        # If separate CSVs were provided, we need to filter patient IDs based on available data
+        if csv_path is None and train_csv is not None:
+            available_patients = set(self.patient_df['case_id'].unique())
+            self.train_patient_ids = [pid for pid in self.train_patient_ids if pid in available_patients]
+            self.val_patient_ids = [pid for pid in self.val_patient_ids if pid in available_patients]
+            self.test_patient_ids = [pid for pid in self.test_patient_ids if pid in available_patients]
+            
+            # We also need to set a dummy split generator or handle it so set_next_fold doesn't break
+            # Or we can just rely on the fact that train_patient_ids are set.
+            # But get_mil_datasets checks for train_patient_ids, so we are good.
+            # However, if the user calls set_next_fold_from_generator, it might fail or overwrite.
+            # We can set a flag or dummy generator if needed.
+            pass
 
     def _rename_cols(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -423,9 +470,23 @@ class SurvivalDataManager:
         label_frac=1.0,
         custom_test_ids=None,
     ):
-        """Uses the original generate_split logic.
-        This creates a generator for k folds. You call set_next_fold_from_generator() to advance.
         """
+        if self.train_patient_ids is not None:
+            if self.verbose:
+                print("Splits already set from separate CSVs. Using fixed split.")
+            
+            # Find indices of current split IDs in patient_df
+            train_indices = self.patient_df.index[self.patient_df['case_id'].isin(self.train_patient_ids)].tolist()
+            val_indices = self.patient_df.index[self.patient_df['case_id'].isin(self.val_patient_ids)].tolist()
+            test_indices = self.patient_df.index[self.patient_df['case_id'].isin(self.test_patient_ids)].tolist()
+            
+            def dummy_gen():
+                yield (train_indices, val_indices, test_indices)
+            
+            self.split_generator = dummy_gen()
+            self.num_folds_generated = 1
+            return
+
         if not hasattr(
             self, "patient_indices_by_strat_label"
         ):  # Ensure _prepare_class_indices_for_split was called

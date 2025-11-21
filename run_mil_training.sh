@@ -128,18 +128,20 @@ PYTHON_ARGS=(
     --batch_size 4
     --use_hdf5
     --n_subsamples 2048
+    --memmap_bin_path "E:\\dataset.bin"
+    --memmap_json_path "E:\\output.json"
 )
 
 # Add memmap arguments if both paths are provided
-if [ -n "${MEMMAP_BIN_PATH:-}" ] && [ -n "${MEMMAP_JSON_PATH:-}" ]; then
-    PYTHON_ARGS+=(--memmap_bin_path "$MEMMAP_BIN_PATH")
-    PYTHON_ARGS+=(--memmap_json_path "$MEMMAP_JSON_PATH")
-    echo "Using memmap datasets:"
-    echo "  Binary file: $MEMMAP_BIN_PATH"
-    echo "  Index file: $MEMMAP_JSON_PATH"
-else
-    echo "Using standard HDF5/PT file datasets (set MEMMAP_BIN_PATH and MEMMAP_JSON_PATH to use memmap)"
-fi
+# if [ -n "${MEMMAP_BIN_PATH:-}" ] && [ -n "${MEMMAP_JSON_PATH:-}" ]; then
+#     PYTHON_ARGS+=(--memmap_bin_path "$MEMMAP_BIN_PATH")
+#     PYTHON_ARGS+=(--memmap_json_path "$MEMMAP_JSON_PATH")
+#     echo "Using memmap datasets:"
+#     echo "  Binary file: $MEMMAP_BIN_PATH"
+#     echo "  Index file: $MEMMAP_JSON_PATH"
+# else
+#     echo "Using standard HDF5/PT file datasets (set MEMMAP_BIN_PATH and MEMMAP_JSON_PATH to use memmap)"
+# fi
 
 python -u train_mil_run.py "${PYTHON_ARGS[@]}"
 

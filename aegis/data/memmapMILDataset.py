@@ -51,7 +51,7 @@ class MemmapDataset(torch.utils.data.Dataset):
             self.memmap = np.memmap(
                 self.bin_path,
                 dtype="float32",
-                mode="r",
+                mode="c",
                 shape=(self.total_rows, self.feature_dim),
             )
 
@@ -141,7 +141,7 @@ class MemmapSurvivalMILDataset(torch.utils.data.Dataset):
             self.memmap = np.memmap(
                 self.bin_path,
                 dtype="float32",
-                mode="r",
+                mode="c",
                 shape=(self.total_rows, self.feature_dim),
             )
 

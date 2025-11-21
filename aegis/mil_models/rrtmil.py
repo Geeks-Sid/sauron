@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import rearrange, reduce
-from timm.models.layers import DropPath
+from timm.layers import DropPath
 from torch import einsum, nn
 
 from .base_mil import BaseMILModel
