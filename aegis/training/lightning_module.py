@@ -24,7 +24,9 @@ class aegis(pl.LightningModule):
 
         # --- Optimization 1: Clean Loss & Metric Initialization ---
         if self.args.task_type.lower() == "classification":
-            self.loss_fn = nn.CrossEntropyLoss()
+            from aegis.losses.classification_loss import FocalLoss
+            # Using Focal Loss with Label Smoothing (0.1) and Gamma (2.0) to handle class imbalance and overfitting
+            self.loss_fn = FocalLoss(gamma=2.0, label_smoothing=0.1)
 
             # Use MetricCollection to group metrics
             metrics = MetricCollection(
