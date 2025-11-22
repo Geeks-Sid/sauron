@@ -123,6 +123,7 @@ class DataManagerParamsBuilder:
             ),
             "shuffle": safe_getattr(args, "shuffle_data", False),
             "split_dir": safe_getattr(args, "split_dir", None),
+            "site_column": safe_getattr(args, "site_column", None),
         }
 
     @staticmethod
@@ -167,6 +168,7 @@ class MILDatasetParamsBuilder:
             "n_subsamples": safe_getattr(args, "n_subsamples", -1),
             "memmap_bin_path": safe_getattr(args, "memmap_bin_path", None),
             "memmap_json_path": safe_getattr(args, "memmap_json_path", None),
+            "site_column": safe_getattr(args, "site_column", None),
         }
 
         # Add survival-specific parameters if needed

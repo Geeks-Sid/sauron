@@ -144,6 +144,13 @@ def run_mil_training_job(args: argparse.Namespace) -> None:
                 "Check data and label mapping."
             )
 
+        # Set num_sites in args if site_column is used
+        if hasattr(data_manager_instance, "site_mapping") and data_manager_instance.site_mapping:
+            args.num_sites = len(data_manager_instance.site_mapping)
+            print(f"Site encoding enabled. Number of sites: {args.num_sites}")
+        else:
+            args.num_sites = 0
+
         print(
             f"Starting experiment: {args.exp_code} with up to {args.k} folds "
             f"(from {args.k_start} to {args.k_end - 1})"

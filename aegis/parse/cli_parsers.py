@@ -439,6 +439,18 @@ def get_mil_args(parser: argparse.ArgumentParser):
         default=1024,
         help="Set the input dimension for the model. This should match the output of the backbone network.",
     )
+    parser.add_argument(
+        "--site_column",
+        type=str,
+        default=None,
+        help="Name of the column containing site information (e.g. 'site', 'OncoTreeSiteCode'). If provided, site encoding will be used.",
+    )
+    parser.add_argument(
+        "--site_emb_dim",
+        type=int,
+        default=32,
+        help="Dimension of the site embedding. Increase this if you have many sites (e.g. > 32).",
+    )
 
     # MambaMIL Specific Configuration
     parser.add_argument(

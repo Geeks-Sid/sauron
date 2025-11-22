@@ -64,7 +64,18 @@ class aegis(pl.LightningModule):
 
         if self.args.task_type.lower() == "classification":
             data, label = batch[0], batch[1]  # Robust to 2 or 3 item batches
-            logits, probs, preds, _, _ = self.model(data)
+            
+            # Check for site_ids (if batch has more items)
+            site_ids = None
+            if len(batch) > 2:
+                # Iterate over extra items to find site_ids (LongTensor)
+                # collate_mil_features returns (features, labels, [coords], [site_ids])
+                for item in batch[2:]:
+                    if isinstance(item, torch.Tensor) and item.dtype == torch.long and item.ndim == 1:
+                         site_ids = item
+                         break
+
+            logits, probs, preds, _, _ = self.model(data, site_ids=site_ids)
             loss = self.loss_fn(logits, label)
 
             results.update({"loss": loss, "probs": probs, "label": label})

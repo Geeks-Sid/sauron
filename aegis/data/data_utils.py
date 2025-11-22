@@ -162,50 +162,40 @@ class SubsetSequentialSampler(Sampler[int]):  # Use Generic type hint
 
 
 def collate_mil_features(
-    batch: List[
-        Tuple[torch.Tensor, int]
-    ],  # Assumes batch item is (features_tensor, label_int)
-    n_subsamples: Optional[
-        int
-    ] = None,  # If provided, pad to this instead of max_instances
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    batch: List[Tuple],
+    n_subsamples: Optional[int] = None,
+) -> Union[
+    Tuple[torch.Tensor, torch.Tensor],
+    Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    Tuple[torch.Tensor, torch.Tensor, List[Any]],
+    Tuple[torch.Tensor, torch.Tensor, List[Any], torch.Tensor],
+]:
     """
-    Collate function for MIL when batch items are (Tensor_Features, Label_Int).
-    Handles both batch_size=1 and batch_size>1 consistently.
-    Always returns 3D tensor: (batch_size, max_instances, feature_dim) for features.
-    Labels are converted to a LongTensor.
-
-    If n_subsamples is provided and > 0, pads all bags to n_subsamples instead of max_instances.
-    This prevents excessive padding when using patch sampling.
+    Collate function for MIL tasks.
+    Handles items:
+    - (features, label)
+    - (features, label, site_id)
+    - (features, label, coords)
+    - (features, label, coords, site_id)
+    
+    Returns:
+        (features, labels, [coords], [site_ids])
     """
-    # Filter out None items if any dataset returns None (e.g. for failed loads, though ideally handled in Dataset)
-    # batch = [item for item in batch if item is not None and item[0] is not None]
-    # if not batch:
-    #     # Handle empty batch case, e.g. return empty tensors or raise error
-    #     # This depends on how the training loop handles it.
-    #     # For now, assume batch is never empty after filtering.
-    #     # If it can be, the caller (DataLoader) might need a custom batch_sampler.
-    #     return torch.empty(0), torch.empty(0, dtype=torch.long)
-
     try:
         features_list = [item[0] for item in batch]
         labels = torch.tensor([item[1] for item in batch], dtype=torch.long)
 
         # Handle both batch_size=1 and batch_size>1 consistently
         # Always return 3D tensor: (batch_size, max_instances, feature_dim)
-        # Determine target number of instances for padding
         max_instances_in_batch = max(feat.shape[0] for feat in features_list)
         feature_dim = features_list[0].shape[1]
 
-        # If n_subsamples is provided and > 0, use it as the padding target
-        # Otherwise, use the max instances in the batch (backward compatible)
         if n_subsamples is not None and n_subsamples > 0:
             target_instances = n_subsamples
         else:
             target_instances = max_instances_in_batch
 
-        # Pad and stack - optimized version
-        # Pre-allocate output tensor for better memory efficiency
+        # Pad and stack
         batch_size = len(features_list)
         features = torch.zeros(
             batch_size,
@@ -218,18 +208,34 @@ def collate_mil_features(
         for i, feat in enumerate(features_list):
             num_instances = min(feat.shape[0], target_instances)
             features[i, :num_instances] = feat[:num_instances]
-            # Remaining positions are already zeros from initialization
+
+        # Handle extra outputs (coords, site_id)
+        extra_returns = []
+        if len(batch[0]) > 2:
+            third_elem = batch[0][2]
+            
+            # Case: (features, label, site_id) where site_id is int
+            if isinstance(third_elem, (int, np.integer)):
+                site_ids = torch.tensor([item[2] for item in batch], dtype=torch.long)
+                extra_returns.append(site_ids)
+            
+            # Case: (features, label, coords) where coords is Tensor/ndarray
+            elif isinstance(third_elem, (torch.Tensor, np.ndarray)):
+                coords = [item[2] for item in batch] # Keep as list of arrays
+                extra_returns.append(coords)
+                
+                # Check for 4th element: (features, label, coords, site_id)
+                if len(batch[0]) > 3:
+                    site_ids = torch.tensor([item[3] for item in batch], dtype=torch.long)
+                    extra_returns.append(site_ids)
+        
+        if extra_returns:
+            return tuple([features, labels] + extra_returns)
+            
     except Exception as e:
         print("Error during collation (collate_mil_features):")
         for i, item in enumerate(batch):
-            print(
-                f"  Item {i}: type={type(item)}, len={len(item) if isinstance(item, (tuple, list)) else 'N/A'}"
-            )
-            if isinstance(item, (tuple, list)) and len(item) > 0:
-                print(
-                    f"    Item[0] type: {type(item[0])}, shape: {item[0].shape if hasattr(item[0], 'shape') else 'N/A'}"
-                )
-                print(f"    Item[1] type: {type(item[1])}")
+            print(f"  Item {i}: type={type(item)}, len={len(item) if isinstance(item, (tuple, list)) else 'N/A'}")
         raise RuntimeError(f"Collation failed: {e}") from e
 
     return features, labels

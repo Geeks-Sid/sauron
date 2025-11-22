@@ -44,6 +44,19 @@ def mil_model_factory(args, in_dim=None):
         getattr(args, "task_type", "classification").lower() == "survival"
     )
 
+    # Site encoding logic
+    num_sites = getattr(args, "num_sites", 0)
+    site_emb_dim = getattr(args, "site_emb_dim", 32)
+    
+    if num_sites > 0:
+        print(f"Site encoding enabled: adding {site_emb_dim} to input dimension {in_dim} -> {in_dim + site_emb_dim}")
+        in_dim += site_emb_dim
+        
+    common_kwargs = {
+        "num_sites": num_sites,
+        "site_emb_dim": site_emb_dim,
+    }
+
     model_type = args.model_type.lower()
 
     if model_type == "att_mil":
@@ -54,6 +67,7 @@ def mil_model_factory(args, in_dim=None):
             dropout_rate=args.drop_out,
             activation=getattr(args, "activation", "relu"),
             is_survival=is_survival_task,
+            **common_kwargs,
         )
     elif model_type == "trans_mil":
         return TransMIL(
@@ -62,6 +76,7 @@ def mil_model_factory(args, in_dim=None):
             dropout_rate=args.drop_out,
             activation=getattr(args, "activation", "gelu"),
             is_survival=is_survival_task,
+            **common_kwargs,
         )
     elif model_type == "max_mil":
         return MaxMIL(
@@ -70,6 +85,7 @@ def mil_model_factory(args, in_dim=None):
             dropout_rate=args.drop_out,
             activation=getattr(args, "activation", "relu"),
             is_survival=is_survival_task,
+            **common_kwargs,
         )
     elif model_type == "mean_mil":
         return MeanMIL(
@@ -78,6 +94,7 @@ def mil_model_factory(args, in_dim=None):
             dropout_rate=args.drop_out,
             activation=getattr(args, "activation", "relu"),
             is_survival=is_survival_task,
+            **common_kwargs,
         )
     elif model_type == "s4model":
         return S4Model(
@@ -86,6 +103,7 @@ def mil_model_factory(args, in_dim=None):
             dropout_rate=args.drop_out,
             activation=getattr(args, "activation", "gelu"),
             is_survival=is_survival_task,
+            **common_kwargs,
         )
     elif model_type == "wikgmil":
         return WiKG(
@@ -93,6 +111,7 @@ def mil_model_factory(args, in_dim=None):
             n_classes=args.n_classes,
             dropout_rate=args.drop_out,
             is_survival=is_survival_task,
+            **common_kwargs,
         )
     elif model_type == "diffabmil":
         return DifferentiableAttentionMIL(
@@ -100,6 +119,7 @@ def mil_model_factory(args, in_dim=None):
             n_classes=args.n_classes,
             dropout_rate=args.drop_out,
             is_survival=is_survival_task,
+            **common_kwargs,
         )
     elif model_type == "hgachc":
         return HGACrossHeadCom(
@@ -107,6 +127,7 @@ def mil_model_factory(args, in_dim=None):
             n_classes=args.n_classes,
             dropout_rate=args.drop_out,
             is_survival=is_survival_task,
+            **common_kwargs,
         )
     elif model_type == "rrtmil":
         return rrtmil(
@@ -114,6 +135,7 @@ def mil_model_factory(args, in_dim=None):
             n_classes=args.n_classes,
             dropout_rate=args.drop_out,
             is_survival=is_survival_task,
+            **common_kwargs,
         )
     elif model_type == "dsmil":
         return DSMIL(
@@ -121,6 +143,7 @@ def mil_model_factory(args, in_dim=None):
             n_classes=args.n_classes,
             dropout_rate=args.drop_out,
             is_survival=is_survival_task,
+            **common_kwargs,
         )
 
     elif model_type == "moemil":
@@ -131,6 +154,7 @@ def mil_model_factory(args, in_dim=None):
             num_experts=getattr(args, "num_experts", 4),
             dropout_rate=args.drop_out,
             is_survival=is_survival_task,
+            **common_kwargs,
         )
     elif model_type == "mambamil":
         if not HAS_MAMBA:
@@ -146,6 +170,7 @@ def mil_model_factory(args, in_dim=None):
             layer=getattr(args, "layer", 2),
             rate=getattr(args, "rate", 10),
             type=getattr(args, "mamba_type", "SRMamba"),
+            **common_kwargs,
         )
     else:
         raise ValueError(f"Unknown MIL model type: {args.model_type}")

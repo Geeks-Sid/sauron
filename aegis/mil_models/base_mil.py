@@ -39,15 +39,24 @@ class BaseMILModel(nn.Module):
         Initialize the base MIL model.
         
         Args:
-            in_dim: Input feature dimension
+            in_dim: Input feature dimension. 
+                    NOTE: If using site encoding (num_sites > 0), this in_dim MUST include the site_emb_dim.
+                    e.g. in_dim = feature_dim + site_emb_dim.
             n_classes: Number of output classes
             is_survival: Whether this is a survival analysis task
-            **kwargs: Additional arguments (passed to subclasses)
+            **kwargs: Additional arguments (passed to subclasses). 
+                      Can include 'num_sites' and 'site_emb_dim' for site encoding.
         """
         super().__init__()
         self.in_dim = in_dim
         self.n_classes = n_classes
         self.is_survival = is_survival
+        
+        # Site encoding support
+        self.num_sites = kwargs.get("num_sites", 0)
+        self.site_emb_dim = kwargs.get("site_emb_dim", 32)
+        if self.num_sites > 0:
+            self.site_embedding = nn.Embedding(self.num_sites, self.site_emb_dim)
     
     def _normalize_input(self, x) -> Tuple[torch.Tensor, int]:
         """
@@ -169,12 +178,13 @@ class BaseMILModel(nn.Module):
                 f"Expected 2-5 outputs. Got: {outputs}"
             )
     
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor], Dict]:
+    def forward(self, x: torch.Tensor, site_ids: Optional[torch.Tensor] = None, **kwargs) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor], Dict]:
         """
         Forward pass with automatic batch size handling.
         
         Args:
             x: Input tensor of shape (num_instances, in_dim) or (batch_size, num_instances, in_dim)
+            site_ids: Optional tensor of site IDs (batch_size,)
             
         Returns:
             Standardized tuple:
@@ -184,8 +194,20 @@ class BaseMILModel(nn.Module):
         # Normalize input to 3D
         x_normalized, batch_size = self._normalize_input(x)
         
+        # Apply site encoding if available and requested
+        if hasattr(self, "site_embedding") and site_ids is not None:
+            # site_ids: (batch_size,)
+            # embeddings: (batch_size, site_emb_dim)
+            site_embs = self.site_embedding(site_ids)
+            
+            # Expand to match instances: (batch_size, num_instances, site_emb_dim)
+            site_embs = site_embs.unsqueeze(1).expand(-1, x_normalized.shape[1], -1)
+            
+            # Concatenate to features: (batch_size, num_instances, in_dim + site_emb_dim)
+            x_normalized = torch.cat([x_normalized, site_embs], dim=-1)
+        
         # Call the implementation
-        outputs = self._forward_impl(x_normalized)
+        outputs = self._forward_impl(x_normalized, **kwargs)
         
         # Standardize outputs
         standardized_outputs = self._standardize_output(outputs, batch_size)
@@ -195,7 +217,7 @@ class BaseMILModel(nn.Module):
         # single samples to ensure compatibility with DataLoader outputs.
         return standardized_outputs
     
-    def _forward_impl(self, x: torch.Tensor) -> Tuple[Any, ...]:
+    def _forward_impl(self, x: torch.Tensor, **kwargs) -> Tuple[Any, ...]:
         """
         Implementation of the forward pass.
         Subclasses must implement this method.
