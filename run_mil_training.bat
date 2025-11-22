@@ -74,7 +74,9 @@ echo Launching training...
 :: Build command arguments
 :: Note: Using ^ for line continuation
 set PYTHON_ARGS=--data_root_dir "E:\features_uni_v2" ^
- --dataset_csv Data/tcga-ot_train.csv ^
+ --train_csv Data/tcga-ot_train.csv ^
+ --test_csv Data/tcga-ot_test.csv ^
+ --val_csv Data/tcga-ot_val.csv ^
  --label_col OncoTreeCode ^
  --patient_id_col case_id ^
  --slide_id_col slide_id ^
@@ -107,6 +109,9 @@ set PYTHON_ARGS=--data_root_dir "E:\features_uni_v2" ^
 @REM  --memmap_json_path "E:\output.json"
 
 :: Run the python script
+:: Run the code on GPU 1 with CUDA_VISIBLE_DEVICES=1
+set CUDA_VISIBLE_DEVICES=1
+
 python -u train_mil_run.py %PYTHON_ARGS%
 
 if %errorlevel% neq 0 (

@@ -13,6 +13,15 @@ from aegis.mil_models.S4MIL import S4Model
 from aegis.mil_models.TransMIL import TransMIL
 from aegis.mil_models.WIKGMIL import WiKG
 
+try:
+    from aegis.mil_models.mambaMIL import MambaMIL, HAS_MAMBA_SSM
+    HAS_MAMBA = HAS_MAMBA_SSM
+except ImportError:
+    HAS_MAMBA = False
+except Exception as e:
+    print(f"Warning: MambaMIL could not be imported: {e}")
+    HAS_MAMBA = False
+
 
 def mil_model_factory(args, in_dim=None):
     """
@@ -122,6 +131,21 @@ def mil_model_factory(args, in_dim=None):
             num_experts=getattr(args, "num_experts", 4),
             dropout_rate=args.drop_out,
             is_survival=is_survival_task,
+        )
+    elif model_type == "mambamil":
+        if not HAS_MAMBA:
+            raise ImportError(
+                "MambaMIL is not available. Please install mamba-ssm and causal-conv1d."
+            )
+        return MambaMIL(
+            in_dim=in_dim,
+            n_classes=args.n_classes,
+            dropout_rate=args.drop_out,
+            activation=getattr(args, "activation", "relu"),
+            is_survival=is_survival_task,
+            layer=getattr(args, "layer", 2),
+            rate=getattr(args, "rate", 10),
+            type=getattr(args, "mamba_type", "SRMamba"),
         )
     else:
         raise ValueError(f"Unknown MIL model type: {args.model_type}")

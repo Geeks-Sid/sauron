@@ -6,9 +6,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from aegis.mil_models.mamba_ssm.modules.bimamba import BiMamba
-from aegis.mil_models.mamba_ssm.modules.mamba_simple import Mamba
-from aegis.mil_models.mamba_ssm.modules.srmamba import SRMamba
+try:
+    from aegis.mil_models.mamba_ssm.modules.bimamba import BiMamba
+    from aegis.mil_models.mamba_ssm.modules.mamba_simple import Mamba
+    from aegis.mil_models.mamba_ssm.modules.srmamba import SRMamba
+    HAS_MAMBA_SSM = True
+except ImportError as e:
+    print(f"Warning: mamba_ssm modules could not be imported: {e}")
+    HAS_MAMBA_SSM = False
+    # Define dummy classes to avoid NameError in __init__ before the check
+    BiMamba = object
+    Mamba = object
+    SRMamba = object
 
 from .base_mil import BaseMILModel
 
@@ -46,6 +55,12 @@ class MambaMIL(BaseMILModel):
             activation = act
         if survival is not None:
             is_survival = survival
+
+        if not HAS_MAMBA_SSM:
+            raise ImportError(
+                "MambaMIL cannot be initialized because mamba_ssm modules are missing. "
+                "Please install mamba-ssm and causal-conv1d."
+            )
 
         super().__init__(in_dim=in_dim, n_classes=n_classes, is_survival=is_survival)
 
