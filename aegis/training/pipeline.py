@@ -65,8 +65,14 @@ def train_fold(
         use_weighted_sampler=args.weighted_sample,
         **loader_kwargs,
     )
-    val_loader = get_dataloader(val_dataset, shuffle=False, **loader_kwargs)
-    test_loader = get_dataloader(test_dataset, shuffle=False, **loader_kwargs)
+
+    # For validation and testing, we want to use all samples (n_subsamples=-1)
+    # We remove n_subsamples from kwargs so get_dataloader uses the dataset's value
+    eval_loader_kwargs = loader_kwargs.copy()
+    eval_loader_kwargs["n_subsamples"] = None
+
+    val_loader = get_dataloader(val_dataset, shuffle=False, **eval_loader_kwargs)
+    test_loader = get_dataloader(test_dataset, shuffle=False, **eval_loader_kwargs)
 
     # Model
     model = aegis(args)

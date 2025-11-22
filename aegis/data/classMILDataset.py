@@ -560,7 +560,7 @@ class ClassificationDataManager:
                     bin_path=memmap_bin_path,
                     json_path=memmap_json_path,
                     slide_data_df=val_df_split,
-                    n_subsamples=n_subsamples if n_subsamples > 0 else 2048,
+                    n_subsamples=-1,
                 )
                 if not val_df_split.empty
                 else None
@@ -570,7 +570,7 @@ class ClassificationDataManager:
                     bin_path=memmap_bin_path,
                     json_path=memmap_json_path,
                     slide_data_df=test_df_split,
-                    n_subsamples=n_subsamples if n_subsamples > 0 else 2048,
+                    n_subsamples=-1,
                 )
                 if not test_df_split.empty
                 else None
@@ -584,22 +584,27 @@ class ClassificationDataManager:
                 "patch_size": patch_size,
                 "use_hdf5": use_hdf5,
                 "cache_enabled": cache_enabled,
-                "n_subsamples": n_subsamples,
                 "site_column": "site_id" if self.site_column else None,
             }
+            
+            train_params = common_params.copy()
+            train_params["n_subsamples"] = n_subsamples
+            
+            eval_params = common_params.copy()
+            eval_params["n_subsamples"] = -1
 
             train_dataset = (
-                WSIMILDataset(slide_data_df=train_df_split, **common_params)
+                WSIMILDataset(slide_data_df=train_df_split, **train_params)
                 if not train_df_split.empty
                 else None
             )
             val_dataset = (
-                WSIMILDataset(slide_data_df=val_df_split, **common_params)
+                WSIMILDataset(slide_data_df=val_df_split, **eval_params)
                 if not val_df_split.empty
                 else None
             )
             test_dataset = (
-                WSIMILDataset(slide_data_df=test_df_split, **common_params)
+                WSIMILDataset(slide_data_df=test_df_split, **eval_params)
                 if not test_df_split.empty
                 else None
             )
