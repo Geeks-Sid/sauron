@@ -73,8 +73,8 @@ def train_fold(
     # Callbacks
     checkpoint_dir = os.path.join(experiment_base_results_dir, "checkpoints")
 
-    monitor_metric = "val_c_index" if args.task_type == "survival" else "val_auc"
-    monitor_mode = "max" if monitor_metric in ["val_c_index", "val_auc"] else "min"
+    monitor_metric = "val_c_index" if args.task_type == "survival" else "val_acc"
+    monitor_mode = "max" if monitor_metric in ["val_c_index", "val_acc"] else "min"
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,

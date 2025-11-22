@@ -12,6 +12,13 @@ RUN apt-get update && apt-get install -y \
     grep \
     && rm -rf /var/lib/apt/lists/*
 
+# Fix for "externally managed" environment error:
+# Remove the marker file to allow system-wide package installation
+# This is necessary because the base image enforces PEP 668, but we want to install into the system environment in Docker.
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+
+
 # Install uv
 RUN pip3 install --no-cache-dir uv
 
@@ -19,34 +26,31 @@ RUN pip3 install --no-cache-dir uv
 COPY . /app
 
 # Create a filtered requirements file excluding torch/torchvision/torchaudio
-# (these are already installed in the base image)
-# Also add dependencies from setup.py/pyproject.toml that might be missing
-RUN sed -e '/^torch/d' -e '/^torchvision/d' -e '/^torchaudio/d' \
-    aegis/requirements.txt | \
-    grep -v "^#" | \
-    grep -v "^$" | \
-    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > /tmp/requirements_no_torch.txt && \
-    echo "termcolor" >> /tmp/requirements_no_torch.txt && \
-    echo "timm" >> /tmp/requirements_no_torch.txt && \
-    echo "scikit-image" >> /tmp/requirements_no_torch.txt && \
-    echo "pytorch-lightning" >> /tmp/requirements_no_torch.txt
+# We exclude these to avoid overwriting the optimized versions provided by the NVIDIA base image.
+# We use python to carefully filter only the core torch packages, preserving torch_geometric etc.
+RUN python3 -c "lines = [l.strip() for l in open('/app/requirements.txt') if l.strip()]; \
+    filtered = [l for l in lines if not (l == 'torch' or l.startswith(('torch==', 'torch>=', 'torch<', 'torch>', 'torch~=', 'torchvision', 'torchaudio')))]; \
+    print('\n'.join(filtered))" > /tmp/requirements_no_torch.txt
 
-# Install Python dependencies using uv (system-wide, no venv needed in Docker)
+# Install Python dependencies using uv (system-wide)
 RUN uv pip install --system --no-cache -r /tmp/requirements_no_torch.txt
 
 # Install the package using uv
-RUN uv pip install --system --no-cache .
+RUN uv pip install --system --no-cache /app
 
 # Set the entrypoint
-ENTRYPOINT ["aegis"]
+# Using /bin/bash allows interactive use.
+ENTRYPOINT ["/bin/bash"]
 
 # To mount your E: drive when running the container, use:
 # 
 # For WSL/Linux:
-#   docker run -it --gpus all -v /mnt/e:/data aegis /bin/bash
+#   docker run -it --gpus all -v /mnt/e:/data /app /bin/bash
 #
 # For Windows (native Docker Desktop):
-#   docker run -it --gpus all -v E:/:/data aegis /bin/bash
+#   docker run -it --gpus all -v E:/:/data /app /bin/bash
 #
 # Or use docker-compose.yml (see docker-compose.yml file)
 
+#
+# Or use docker-compose.yml (see docker-compose.yml file)

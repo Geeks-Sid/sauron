@@ -32,36 +32,28 @@ echo "Starting MIL training script..."
 echo "Current directory: $(pwd)"
 
 # Initialize conda for bash script
-# Try multiple methods to initialize conda
-CONDA_BASE=""
+# Only attempt if conda is available (skip in Docker if using system python)
 if command -v conda &> /dev/null; then
     CONDA_BASE=$(conda info --base 2>/dev/null || echo "")
-fi
 
-if [ -n "$CONDA_BASE" ] && [ -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]; then
-    # shellcheck source=/dev/null
-    source "${CONDA_BASE}/etc/profile.d/conda.sh"
-elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    # shellcheck source=/dev/null
-    source "$HOME/miniconda3/etc/profile.d/conda.sh"
-elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
-    # shellcheck source=/dev/null
-    source "$HOME/anaconda3/etc/profile.d/conda.sh"
+    if [ -n "$CONDA_BASE" ] && [ -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]; then
+        source "${CONDA_BASE}/etc/profile.d/conda.sh"
+    elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+        source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+        source "$HOME/anaconda3/etc/profile.d/conda.sh"
+    fi
+
+    # Activate conda environment
+    echo "Activating conda environment: aegis"
+    # Initialize conda for this shell
+    eval "$(conda shell.bash hook)"
+    conda activate aegis || {
+        echo "Warning: Failed to activate conda environment 'aegis'. Continuing with current python..."
+    }
 else
-    echo "Error: Could not find conda initialization script"
-    echo "Please ensure conda is installed and accessible"
-    exit 1
+    echo "Conda not found. Assuming environment is already configured (e.g. Docker)."
 fi
-
-# Activate conda environment
-echo "Activating conda environment: aegis"
-# Initialize conda for this shell
-eval "$(conda shell.bash hook)"
-conda activate aegis || {
-    echo "Error: Failed to activate conda environment 'aegis'"
-    echo "Please ensure the environment exists: conda env list"
-    exit 1
-}
 echo "Conda environment activated. Python path: $(which python)"
 
 # Verify Python script exists
@@ -98,8 +90,10 @@ echo "Launching training..."
 
 # Build base command arguments
 PYTHON_ARGS=(
-    --data_root_dir "E:\\features_uni_v2"
-    --dataset_csv Data/tcga-ot_train.csv
+    --data_root_dir "/data/features_uni_v2"
+    --train_csv Data/tcga-ot_train.csv
+    --val_csv Data/tcga-ot_val.csv
+    --test_csv Data/tcga-ot_test.csv
     --label_col OncoTreeCode
     --patient_id_col case_id
     --slide_id_col slide_id
@@ -125,11 +119,11 @@ PYTHON_ARGS=(
     --early_stopping
     --preloading no
     --weighted_sample
-    --batch_size 4
+    --batch_size 8
     --use_hdf5
     --n_subsamples 2048
-    --memmap_bin_path "E:\\dataset.bin"
-    --memmap_json_path "E:\\output.json"
+    # --memmap_bin_path "E:\\dataset.bin"
+    # --memmap_json_path "E:\\output.json"
 )
 
 # Add memmap arguments if both paths are provided

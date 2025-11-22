@@ -33,6 +33,9 @@ echo "Running Docker container with E: drive mounted at /data"
 echo "Command: $CMD"
 docker run -it --rm \
     --gpus all \
+    --shm-size 512g \
+    --memory 96g \
+    --cpus 32 \
     -v "$E_DRIVE_PATH:/data:rw" \
     -v "$(pwd)/results:/app/results:rw" \
     -v "$(pwd)/Data:/app/Data:rw" \

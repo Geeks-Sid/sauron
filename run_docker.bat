@@ -23,6 +23,9 @@ echo Running Docker container with E: drive mounted at /data
 echo Command: %CMD%
 docker run -it --rm ^
     --gpus all ^
+    --shm-size 512g ^
+    --memory 96g ^
+    --cpus 32 ^
     -v E:/:/data:rw ^
     -v %CD%\results:/app/results:rw ^
     -v %CD%\Data:/app/Data:rw ^

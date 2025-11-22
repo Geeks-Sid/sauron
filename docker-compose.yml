@@ -7,6 +7,9 @@ services:
       dockerfile: Dockerfile
     image: aegis:latest
     container_name: aegis-container
+    
+    # Set shared memory size to 512GB as requested to fix PyTorch DataLoader errors
+    shm_size: '512gb'
 
     # Enable GPU support (compatible with Docker Compose v1 and v2)
     deploy:
@@ -16,6 +19,9 @@ services:
             - driver: nvidia
               count: all
               capabilities: [ gpu ]
+        limits:
+           memory: 96G
+           cpus: '32'
 
     # Alternative GPU configuration for newer Docker Compose versions
     # Uncomment if the above doesn't work:
