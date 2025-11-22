@@ -56,6 +56,7 @@ def train_fold(
         ),  # Try reducing from 16 to 4 or 8 first
         "pin_memory": True,  # <--- ADD THIS
         "persistent_workers": True,  # <--- ADD THIS (Only works if num_workers > 0)
+        "prefetch_factor": 4,  # Reduce from default 16 to prevent RAM spikes
     }
 
     train_loader = get_dataloader(

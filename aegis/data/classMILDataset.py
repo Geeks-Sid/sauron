@@ -44,6 +44,7 @@ class ClassificationDataManager:
         train_csv: Optional[str] = None,
         val_csv: Optional[str] = None,
         test_csv: Optional[str] = None,
+        site_column: Optional[str] = None,  # Column name for site information
     ):
         self.csv_path = csv_path
         self.train_csv = train_csv
@@ -60,6 +61,8 @@ class ClassificationDataManager:
             patient_stratification  # Used by __len__ if this class were a Dataset
         )
         self.split_dir = split_dir
+        self.site_column = site_column
+        self.site_mapping: Dict[str, int] = {}
 
         self.train_patient_ids: Optional[List[str]] = None
         self.val_patient_ids: Optional[List[str]] = None
@@ -125,6 +128,26 @@ class ClassificationDataManager:
         # Drop rows where mapping resulted in NaN (e.g. label_str not in inferred map)
         self.slide_data.dropna(subset=["label"], inplace=True)
         self.slide_data["label"] = self.slide_data["label"].astype(int)
+
+        # Process site column if provided
+        if self.site_column:
+            if self.site_column not in self.slide_data.columns:
+                raise ValueError(f"Site column '{self.site_column}' not found in CSV.")
+            
+            # Create site mapping
+            unique_sites = sorted(self.slide_data[self.site_column].astype(str).unique())
+            self.site_mapping = {site: i for i, site in enumerate(unique_sites)}
+            
+            # Map sites to integers
+            self.slide_data["site_id"] = self.slide_data[self.site_column].astype(str).map(self.site_mapping)
+            # Handle potential NaNs if any (though we built map from unique values)
+            if self.slide_data["site_id"].isnull().any():
+                 raise ValueError("NaN values found in site column mapping.")
+            self.slide_data["site_id"] = self.slide_data["site_id"].astype(int)
+            
+            if verbose:
+                print(f"Inferred site_mapping: {self.site_mapping}")
+                print(f"Number of sites: {len(self.site_mapping)}")
 
         self.num_classes = len(set(self.label_mapping.values()))
         if self.num_classes == 0 and len(self.slide_data) > 0:
@@ -562,6 +585,7 @@ class ClassificationDataManager:
                 "use_hdf5": use_hdf5,
                 "cache_enabled": cache_enabled,
                 "n_subsamples": n_subsamples,
+                "site_column": "site_id" if self.site_column else None,
             }
 
             train_dataset = (
@@ -679,7 +703,9 @@ class WSIMILDataset(Dataset):
         patch_size: str = "",
         use_hdf5: bool = False,
         cache_enabled: bool = False,
+        cache_enabled: bool = False,
         n_subsamples: int = -1,  # Number of patches to sample per bag (-1 means use all)
+        site_column: Optional[str] = None, # Column name for site ID in slide_data_df
     ):
         self.slide_data = slide_data_df  # DataFrame for this specific split
         self.data_directory = data_directory
@@ -691,6 +717,7 @@ class WSIMILDataset(Dataset):
         self.use_hdf5 = use_hdf5
         self.cache_enabled = cache_enabled
         self.n_subsamples = n_subsamples
+        self.site_column = site_column
         self.data_cache: Dict[str, torch.Tensor] = {}
         self.verbose = True  # Add verbose flag if not present
 
@@ -707,7 +734,12 @@ class WSIMILDataset(Dataset):
     ) -> Union[Tuple[torch.Tensor, int], Tuple[torch.Tensor, int, np.ndarray]]:
         row = self.slide_data.iloc[idx]
         slide_id = row["slide_id"]
+        slide_id = row["slide_id"]
         label = row["label"]  # Assumes 'label' is already integer mapped
+        
+        site_id = None
+        if self.site_column:
+            site_id = row[self.site_column]
 
         current_data_dir_path: str
         if isinstance(self.data_directory, dict):
@@ -771,13 +803,23 @@ class WSIMILDataset(Dataset):
 
             # Sample patches if n_subsamples is specified and bag is larger
             features = self._sample_patches(features)
+            
+            if self.site_column:
+                return features, label, site_id
             return features, label
         else:  # use_hdf5
             file_path = os.path.join(current_data_dir_path, f"{slide_id}.h5")
             try:
                 with _worker_hdf5_cache_lock:
                     if file_path not in _worker_hdf5_cache:
+                        # Simple LRU: if cache full, pop the first item (oldest)
+                        if len(_worker_hdf5_cache) > 512:
+                            oldest_file = next(iter(_worker_hdf5_cache))
+                            _worker_hdf5_cache[oldest_file].close()
+                            del _worker_hdf5_cache[oldest_file]
+                        
                         _worker_hdf5_cache[file_path] = h5py.File(file_path, "r")
+                    
                     hdf5_file = _worker_hdf5_cache[file_path]
 
                 features_dset = hdf5_file["features"]
@@ -793,8 +835,12 @@ class WSIMILDataset(Dataset):
                 if "coords" in hdf5_file:
                     coords_dset = hdf5_file["coords"]
                     coordinates = coords_dset[indices]
+                    if self.site_column:
+                        return features, label, coordinates, site_id
                     return features, label, coordinates
                 else:
+                    if self.site_column:
+                        return features, label, site_id
                     return features, label
             except OSError as e:
                 raise OSError(f"HDF5 file not found or corrupted: {file_path}") from e
