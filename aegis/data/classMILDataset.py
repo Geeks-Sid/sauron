@@ -708,7 +708,6 @@ class WSIMILDataset(Dataset):
         patch_size: str = "",
         use_hdf5: bool = False,
         cache_enabled: bool = False,
-        cache_enabled: bool = False,
         n_subsamples: int = -1,  # Number of patches to sample per bag (-1 means use all)
         site_column: Optional[str] = None, # Column name for site ID in slide_data_df
     ):
