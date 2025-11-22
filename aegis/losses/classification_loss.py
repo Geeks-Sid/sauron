@@ -53,3 +53,45 @@ class FocalLoss(nn.Module):
             return focal_loss.sum()
         else:
             return focal_loss
+
+class Poly1Loss(nn.Module):
+    """
+    Poly1Loss: A alternative to Focal Loss that adds a polynomial term to Cross Entropy.
+    Often provides better stability and accuracy than Focal Loss by preventing 
+    over-suppression of the gradient for easy samples.
+    
+    Formula: L_Poly1 = L_CE + epsilon * (1 - Pt)
+    
+    Args:
+        num_classes (int): Number of classes.
+        epsilon (float): Weight for the polynomial term. Default: 1.0.
+        reduction (str): 'mean', 'sum', or 'none'.
+        weight (torch.Tensor, optional): Class weights.
+    """
+    def __init__(self, num_classes, epsilon=1.0, reduction='mean', weight=None):
+        super(Poly1Loss, self).__init__()
+        self.num_classes = num_classes
+        self.epsilon = epsilon
+        self.reduction = reduction
+        self.weight = weight
+
+    def forward(self, inputs, targets):
+        if self.weight is not None and self.weight.device != inputs.device:
+            self.weight = self.weight.to(inputs.device)
+
+        # 1. Standard Cross Entropy
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none', weight=self.weight)
+        
+        # 2. Polynomial term (1 - Pt)
+        pt = F.softmax(inputs, dim=-1)
+        p_target = pt.gather(1, targets.view(-1, 1)).squeeze(1)
+        poly1 = self.epsilon * (1 - p_target)
+        
+        # 3. Combine
+        loss = ce_loss + poly1
+        
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        return loss

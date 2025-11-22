@@ -122,6 +122,7 @@ PYTHON_ARGS=(
     --batch_size 8
     --use_hdf5
     --n_subsamples 2048
+    --loss_type poly
     # --memmap_bin_path "E:\\dataset.bin"
     # --memmap_json_path "E:\\output.json"
 )

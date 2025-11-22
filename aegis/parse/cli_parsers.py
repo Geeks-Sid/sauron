@@ -531,6 +531,13 @@ def get_mil_args(parser: argparse.ArgumentParser):
         help="Slide-level classification loss function (default: nll_surv).",
     )
     parser.add_argument(
+        "--loss_type",
+        type=str,
+        choices=["focal", "poly"],
+        default="focal",
+        help="Type of loss function to use for classification tasks. Options: 'focal' (default), 'poly'.",
+    )
+    parser.add_argument(
         "--alpha_surv",
         type=float,
         default=0.0,

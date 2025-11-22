@@ -24,9 +24,14 @@ class aegis(pl.LightningModule):
 
         # --- Optimization 1: Clean Loss & Metric Initialization ---
         if self.args.task_type.lower() == "classification":
-            from aegis.losses.classification_loss import FocalLoss
-            # Using Focal Loss with Label Smoothing (0.1) and Gamma (2.0) to handle class imbalance and overfitting
-            self.loss_fn = FocalLoss(gamma=2.0, label_smoothing=0.1)
+            if getattr(self.args, "loss_type", "focal") == "poly":
+                from aegis.losses.classification_loss import Poly1Loss
+                # Using Poly1Loss with epsilon=1.0
+                self.loss_fn = Poly1Loss(num_classes=args.n_classes, epsilon=1.0)
+            else:
+                from aegis.losses.classification_loss import FocalLoss
+                # Using Focal Loss with Label Smoothing (0.1) and Gamma (2.0) to handle class imbalance and overfitting
+                self.loss_fn = FocalLoss(gamma=2.0, label_smoothing=0.1)
 
             # Use MetricCollection to group metrics
             metrics = MetricCollection(
